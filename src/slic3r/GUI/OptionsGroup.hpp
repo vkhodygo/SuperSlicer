@@ -54,6 +54,8 @@ public:
     wxString	label;
     wxString	label_tooltip;
 	std::string	label_path;
+    bool        undo_to_sys{false}; // BBS: object config
+    bool        toggle_visible{true}; // BBS: hide some line
 
     size_t		full_width {0}; 
 	wxColour*	full_Label_color {nullptr};
@@ -63,6 +65,12 @@ public:
 	wxWindow*	near_label_widget_win {nullptr};
     wxSizer*	widget_sizer {nullptr};
     wxSizer*	extra_widget_sizer {nullptr};
+    //BBS: export the extra colume widget
+    wxWindow*	extra_widget_win {nullptr};
+    //BBS: add api to get the first option's key
+    std::string& get_first_option_key() {
+        return m_options[0].opt_id;
+    }
 
     void append_option(const Option& option) {
         m_options.push_back(option);
@@ -91,11 +99,13 @@ using t_optionfield_map = std::map<t_config_option_key, t_field>;
 using t_opt_map = std::map< std::string, std::pair<std::string, int> >;
 
 class OptionsGroup {
-protected:
-	wxStaticBox*	stb {nullptr};
 public:
-    const bool		staticbox {true};
-    const wxString	title;
+    const bool staticbox{true};
+    bool split_multi_line{false};
+    bool option_label_at_right{false};
+    // BBS: new layout
+    wxWindow *     stb;
+    const wxString  title;
     size_t			label_width = 20 ;// {200};
     wxSizer*		sizer {nullptr};
 	OG_CustomCtrl*  custom_ctrl{ nullptr };
@@ -127,6 +137,8 @@ public:
 	void		append_line(const Line& line);
 	// create controls for the option group
 	void		activate_line(Line& line);
+	//BBS: get line for opt_key
+	Line* get_line(const std::string& opt_key);
 
 	// create all controls for the option group from the m_lines
 	bool		activate(std::function<void()> throw_if_canceled = [](){}, int horiz_alignment = wxALIGN_LEFT);
@@ -158,9 +170,7 @@ public:
 	void			show_field(const t_config_option_key& opt_key, bool show = true);
 	void			hide_field(const t_config_option_key& opt_key) {  show_field(opt_key, false);  }
 
-	void			set_name(const wxString& new_name) {
-							stb->SetLabel(new_name);
-    }
+	void			set_name(const wxString& new_name);
 
 	inline void		enable() { for (auto& field : m_fields) field.second->enable(); }
     inline void		disable() { for (auto& field : m_fields) field.second->disable(); }
@@ -260,7 +270,7 @@ public:
 		Option option = get_option(title, idx);
 		append_single_option_line(option, path);
 	}
-
+	
 	void		on_change_OG(const t_config_option_key& opt_id, const boost::any& value) override;
 	void		back_to_initial_value(const std::string& opt_key) override;
 	void		back_to_sys_value(const std::string& opt_key) override;
@@ -278,10 +288,14 @@ public:
 	boost::any	config_value(const std::string& opt_key, int opt_index, bool deserialize);
 	// return option value from config 
 	boost::any	get_config_value(const DynamicPrintConfig& config, const std::string& opt_key, int opt_index = -1);
+	// BBS: restore all pages in preset
+	boost::any	get_config_value2(const DynamicPrintConfig& config, const std::string& opt_key, int opt_index = -1);
 	Field*		get_fieldc(const t_config_option_key& opt_key, int opt_index);
 	std::pair<OG_CustomCtrl*, bool*>	get_custom_ctrl_with_blinking_ptr(const t_config_option_key& opt_key, int opt_index/* = -1*/);
 
-private:
+	// BBS. Change private to protected to make change_opt_value() method available to
+	// its child class.
+protected:
     // Reference to libslic3r config or ModelConfig::get(), non-owning pointer.
     // The reference is const, so that the spots which modify m_config are clearly
     // demarcated by const_cast and m_config_changed_callback is called afterwards.
@@ -294,6 +308,17 @@ private:
 
     // Change an option on m_config, possibly call ModelConfig::touch().
 	void 	change_opt_value(const t_config_option_key& opt_key, const boost::any& value, int opt_index = 0);
+};
+
+// BBS. Add ExtruderOptionsGroup to change all members in vector option.
+// It is designed for single extruder multiple material machine.
+class ExtruderOptionsGroup : public ConfigOptionsGroup {
+public:
+	ExtruderOptionsGroup(wxWindow* parent, const wxString& title, DynamicPrintConfig* config = nullptr,
+		bool is_tab_opt = false, column_t extra_clmn = nullptr) :
+		ConfigOptionsGroup(parent, title, config, is_tab_opt, extra_clmn) {}
+
+	void on_change_OG(const t_config_option_key& opt_id, const boost::any& value) override;
 };
 
 //  Static text shown among the options.

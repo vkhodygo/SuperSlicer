@@ -2,9 +2,10 @@
 #define _libslic3r_h_
 
 #include "libslic3r_version.h"
-#define GCODEVIEWER_APP_NAME "PrusaSlicer G-code Viewer"
-#define GCODEVIEWER_APP_KEY  "PrusaSlicerGcodeViewer"
-#define GCODEVIEWER_BUILD_ID std::string("PrusaSlicer G-code Viewer-") + std::string(SLIC3R_VERSION) + std::string("-UNKNOWN")
+#define SLIC3R_APP_FULL_NAME "Bambu Studio"
+#define GCODEVIEWER_APP_NAME "BambuStudio G-code Viewer"
+#define GCODEVIEWER_APP_KEY  "BambuStudioGcodeViewer"
+#define GCODEVIEWER_BUILD_ID std::string("BambuStudio G-code Viewer-") + std::string(SLIC3R_VERSION) + std::string("-RC")
 
 // this needs to be included early for MSVC (listing it in Build.PL is not enough)
 #include <memory>
@@ -50,21 +51,44 @@ static constexpr double SCALING_FACTOR = 0.000001;
 static constexpr double PI = 3.141592653589793238;
 // When extruding a closed loop, the loop is interrupted and shortened a bit to reduce the seam.
 static constexpr double LOOP_CLIPPING_LENGTH_OVER_NOZZLE_DIAMETER = 0.15;
+static constexpr double RESOLUTION = 0.0125;
+#define                 SCALED_RESOLUTION (RESOLUTION / SCALING_FACTOR)
+static constexpr double SPARSE_INFILL_RESOLUTION = 0.04;
+#define                 SCALED_SPARSE_INFILL_RESOLUTION (SPARSE_INFILL_RESOLUTION / SCALING_FACTOR)
+
+static constexpr double SUPPORT_RESOLUTION = 0.05;
+#define                 SCALED_SUPPORT_RESOLUTION (SUPPORT_RESOLUTION / SCALING_FACTOR)
 // Maximum perimeter length for the loop to apply the small perimeter speed. 
 #define                 SMALL_PERIMETER_LENGTH  ((6.5 / SCALING_FACTOR) * 2 * PI)
 static constexpr double INSET_OVERLAP_TOLERANCE = 0.4;
 // 3mm ring around the top / bottom / bridging areas.
 //FIXME This is quite a lot.
-static constexpr double EXTERNAL_INFILL_MARGIN = 3.;
+// BBS: 3mm is too large and will cause overflow when printing object which likes shell.
+// We decided to reduce this value according to superslicer.
+// The right way is that area should not be enlarged. But should find arched point at last layer, expecially for
+// bridge area.
+//static constexpr double EXTERNAL_INFILL_MARGIN = 3;
+static constexpr double EXTERNAL_INFILL_MARGIN = 1;
 //FIXME Better to use an inline function with an explicit return type.
 //inline coord_t scale_(coordf_t v) { return coord_t(floor(v / SCALING_FACTOR + 0.5f)); }
 #define scale_(val) ((val) / SCALING_FACTOR)
+
+//BBS: BBS only support relative E and can't been changed by user at the moment. because
+//BBS need to support skip object when printing.
+static constexpr bool RELATIVE_E_AXIS = 1;
 
 #define SCALED_EPSILON scale_(EPSILON)
 
 #ifndef UNUSED
 #define UNUSED(x) (void)(x)
 #endif /* UNUSED */
+
+//BBS: some global const config which user can not change, but developer can
+static constexpr bool g_config_thick_bridges = true;
+static constexpr bool g_config_support_sharp_tails = true;
+static constexpr bool g_config_remove_small_overhangs = true;
+static constexpr float g_config_tree_support_collision_resolution = 0.2;
+static constexpr float g_config_slice_closing_radius = 0.049;
 
 // Write slices as SVG images into out directory during the 2D processing of the slices.
 // #define SLIC3R_DEBUG_SLICE_PROCESSING
@@ -82,6 +106,10 @@ enum Axis {
 	Z,
 	E,
 	F,
+    //BBS: add I, J, P axis
+    I,
+    J,
+    P,
 	NUM_AXES,
 	// For the GCodeReader to mark a parsed axis, which is not in "XYZEF", it was parsed correctly.
 	UNKNOWN_AXIS = NUM_AXES,

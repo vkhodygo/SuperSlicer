@@ -20,6 +20,8 @@ class Model;
 namespace GUI {
 	class Selection;
     class GLGizmosManager;
+	class PartPlateList;
+	class PartPlate;
 } // namespace GUI
 
 namespace UndoRedo {
@@ -85,7 +87,20 @@ struct Snapshot
 	// The topmost snapshot is not being serialized to the Undo / Redo stack until going back in time, 
 	// when the top most state is being serialized, so we can redo back to the top most state.
 	bool 		is_topmost_captured() const { assert(this->is_topmost()); return model_id > 0; }
+
 };
+
+// BBS: moved from UndoRedo.cpp
+// If a snapshot modifies the snapshot type, 
+inline bool snapshot_modifies_project(SnapshotType type)
+{
+	return type == SnapshotType::Action || type == SnapshotType::GizmoAction || type == SnapshotType::ProjectSeparator;
+}
+
+inline bool snapshot_modifies_project(const Snapshot &snapshot)
+{
+	return snapshot_modifies_project(snapshot.snapshot_data.snapshot_type) && (snapshot.name.empty() || snapshot.name.back() != '!');
+}
 
 // Excerpt of Slic3r::GUI::Selection for serialization onto the Undo / Redo stack.
 struct Selection : public Slic3r::ObjectBase {
@@ -120,6 +135,9 @@ public:
 
 	// Store the current application state onto the Undo / Redo stack, remove all snapshots after m_active_snapshot_time.
     void take_snapshot(const std::string& snapshot_name, const Slic3r::Model& model, const Slic3r::GUI::Selection& selection, const Slic3r::GUI::GLGizmosManager& gizmos, const SnapshotData &snapshot_data);
+
+    void take_snapshot(const std::string& snapshot_name, const Slic3r::Model& model, const Slic3r::GUI::Selection& selection, const Slic3r::GUI::GLGizmosManager& gizmos, const Slic3r::GUI::PartPlateList& plate_list, const SnapshotData& snapshot_data);
+
     // To be called just after take_snapshot() when leaving a gizmo, inside which small edits like support point add / remove events or paiting actions were allowed.
     // Remove all but the last edit between the gizmo enter / leave snapshots.
     void reduce_noisy_snapshots(const std::string& new_name);
@@ -132,10 +150,10 @@ public:
 
 	// Roll back the time. If time_to_load is SIZE_MAX, the previous snapshot is activated.
 	// Undoing an action may need to take a snapshot of the current application state, so that redo to the current state is possible.
-    bool undo(Slic3r::Model& model, const Slic3r::GUI::Selection& selection, Slic3r::GUI::GLGizmosManager& gizmos, const SnapshotData &snapshot_data, size_t time_to_load = SIZE_MAX);
+    bool undo(Slic3r::Model& model, const Slic3r::GUI::Selection& selection, Slic3r::GUI::GLGizmosManager& gizmos, Slic3r::GUI::PartPlateList& plate_list, const SnapshotData &snapshot_data, size_t time_to_load = SIZE_MAX);
 
 	// Jump forward in time. If time_to_load is SIZE_MAX, the next snapshot is activated.
-    bool redo(Slic3r::Model& model, Slic3r::GUI::GLGizmosManager& gizmos, size_t time_to_load = SIZE_MAX);
+    bool redo(Slic3r::Model& model, Slic3r::GUI::GLGizmosManager& gizmos, Slic3r::GUI::PartPlateList& plate_list, size_t time_to_load = SIZE_MAX);
 
 	// Snapshot history (names with timestamps).
 	// Each snapshot indicates start of an interval in which this operation is performed.
@@ -157,6 +175,8 @@ public:
     void   mark_current_as_saved();
     // Is the project modified with regard to the last "saved" state marked with mark_current_as_saved()?
     bool   project_modified() const;
+	// BBS: backup and restore
+	bool has_real_change_from(size_t time) const;
 
 	// After load_snapshot() / undo() / redo() the selection is deserialized into a list of ObjectIDs, which needs to be converted
 	// into the list of GLVolume pointers once the 3D scene is updated.

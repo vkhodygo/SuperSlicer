@@ -1,11 +1,11 @@
 #include "GUI_Init.hpp"
 
-#include "libslic3r/AppConfig.hpp" 
+#include "libslic3r/AppConfig.hpp"
 
 #include "slic3r/GUI/GUI.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
 #include "slic3r/GUI/3DScene.hpp"
-#include "slic3r/GUI/InstanceCheck.hpp" 
+#include "slic3r/GUI/InstanceCheck.hpp"
 #include "slic3r/GUI/format.hpp"
 #include "slic3r/GUI/MainFrame.hpp"
 #include "slic3r/GUI/Plater.hpp"
@@ -36,16 +36,18 @@ int GUI_Run(GUI_InitParams &params)
     signal(SIGCHLD, SIG_DFL);
 #endif // __APPLE__
 
+    //BBS: remove the try-catch and let exception goto above
     try {
-        GUI::GUI_App* gui = new GUI::GUI_App(params.start_as_gcodeviewer ? GUI::GUI_App::EAppMode::GCodeViewer : GUI::GUI_App::EAppMode::Editor);
-        if (gui->get_app_mode() != GUI::GUI_App::EAppMode::GCodeViewer) {
+        //GUI::GUI_App* gui = new GUI::GUI_App(params.start_as_gcodeviewer ? GUI::GUI_App::EAppMode::GCodeViewer : GUI::GUI_App::EAppMode::Editor);
+        GUI::GUI_App* gui = new GUI::GUI_App();
+        /*if (gui->get_app_mode() != GUI::GUI_App::EAppMode::GCodeViewer) {
             // G-code viewer is currently not performing instance check, a new G-code viewer is started every time.
             bool gui_single_instance_setting = gui->app_config->get("single_instance") == "1";
             if (Slic3r::instance_check(params.argc, params.argv, gui_single_instance_setting)) {
                 //TODO: do we have delete gui and other stuff?
                 return -1;
             }
-        }
+        //}*/
 
 //      gui->autosave = m_config.opt_string("autosave");
         GUI::GUI_App::SetInstance(gui);
@@ -53,16 +55,14 @@ int GUI_Run(GUI_InitParams &params)
 
         return wxEntry(params.argc, params.argv);
     } catch (const Slic3r::Exception &ex) {
-        boost::nowide::cerr << ex.what() << std::endl;
-        wxMessageBox(boost::nowide::widen(ex.what()), _L("PrusaSlicer GUI initialization failed"), wxICON_STOP);
+        BOOST_LOG_TRIVIAL(error) << ex.what() << std::endl;
+        wxMessageBox(boost::nowide::widen(ex.what()), _L("Bambu Studio GUI initialization failed"), wxICON_STOP);
     } catch (const std::exception &ex) {
-        boost::nowide::cerr << "PrusaSlicer GUI initialization failed: " << ex.what() << std::endl;
-        wxMessageBox(format_wxstr(_L("Fatal error, exception catched: %1%"), ex.what()), _L("PrusaSlicer GUI initialization failed"), wxICON_STOP);
+        BOOST_LOG_TRIVIAL(error) << ex.what() << std::endl;
+        wxMessageBox(format_wxstr(_L("Fatal error, exception catched: %1%"), ex.what()), _L("Bambu Studio GUI initialization failed"), wxICON_STOP);
     }
-
     // error
     return 1;
 }
-    
 }
 }

@@ -23,6 +23,7 @@ namespace Slic3r
 
 static const coordf_t MIN_LAYER_HEIGHT = 0.01;
 static const coordf_t MIN_LAYER_HEIGHT_DEFAULT = 0.07;
+static const double LAYER_HEIGHT_CHANGE_STEP = 0.04;
 
 // Minimum layer height for the variable layer height algorithm.
 inline coordf_t min_layer_height_from_nozzle(const PrintConfig &print_config, int idx_nozzle)
@@ -64,38 +65,39 @@ SlicingParameters SlicingParameters::create_from_config(
 	coordf_t				 object_height,
 	const std::vector<unsigned int> &object_extruders)
 {
-    assert(! print_config.first_layer_height.percent);
-    coordf_t first_layer_height                      = (print_config.first_layer_height.value <= 0) ? 
-        object_config.layer_height.value : print_config.first_layer_height.value;
-    // If object_config.support_material_extruder == 0 resp. object_config.support_material_interface_extruder == 0,
+    coordf_t initial_layer_print_height                      = (print_config.initial_layer_print_height.value <= 0) ? 
+        object_config.layer_height.value : print_config.initial_layer_print_height.value;
+    // If object_config.support_filament == 0 resp. object_config.support_interface_filament == 0,
     // print_config.nozzle_diameter.get_at(size_t(-1)) returns the 0th nozzle diameter,
-    // which is consistent with the requirement that if support_material_extruder == 0 resp. support_material_interface_extruder == 0,
+    // which is consistent with the requirement that if support_filament == 0 resp. support_interface_filament == 0,
     // support will not trigger tool change, but it will use the current nozzle instead.
     // In that case all the nozzles have to be of the same diameter.
-    coordf_t support_material_extruder_dmr           = print_config.nozzle_diameter.get_at(object_config.support_material_extruder.value - 1);
-    coordf_t support_material_interface_extruder_dmr = print_config.nozzle_diameter.get_at(object_config.support_material_interface_extruder.value - 1);
-    bool     soluble_interface                       = object_config.support_material_contact_distance.value == 0.;
+    coordf_t support_material_extruder_dmr           = print_config.nozzle_diameter.get_at(object_config.support_filament.value - 1);
+    coordf_t support_material_interface_extruder_dmr = print_config.nozzle_diameter.get_at(object_config.support_interface_filament.value - 1);
+    bool     soluble_interface                       = object_config.support_top_z_distance.value == 0.;
 
     SlicingParameters params;
     params.layer_height = object_config.layer_height.value;
-    params.first_print_layer_height = first_layer_height;
-    params.first_object_layer_height = first_layer_height;
+    params.first_print_layer_height = initial_layer_print_height;
+    params.first_object_layer_height = initial_layer_print_height;
     params.object_print_z_min = 0.;
     params.object_print_z_max = object_height;
     params.base_raft_layers = object_config.raft_layers.value;
     params.soluble_interface = soluble_interface;
+    //BBS
+    params.adaptive_layer_height = print_config.enable_prime_tower ? false : object_config.adaptive_layer_height;
 
     // Miniumum/maximum of the minimum layer height over all extruders.
     params.min_layer_height = MIN_LAYER_HEIGHT;
     params.max_layer_height = std::numeric_limits<double>::max();
-    if (object_config.support_material.value || params.base_raft_layers > 0 || object_config.support_material_enforce_layers > 0) {
+    if (object_config.enable_support.value || params.base_raft_layers > 0 || object_config.enforce_support_layers > 0) {
         // Has some form of support. Add the support layers to the minimum / maximum layer height limits.
         params.min_layer_height = std::max(
-            min_layer_height_from_nozzle(print_config, object_config.support_material_extruder), 
-            min_layer_height_from_nozzle(print_config, object_config.support_material_interface_extruder));
+            min_layer_height_from_nozzle(print_config, object_config.support_filament), 
+            min_layer_height_from_nozzle(print_config, object_config.support_interface_filament));
         params.max_layer_height = std::min(
-            max_layer_height_from_nozzle(print_config, object_config.support_material_extruder), 
-            max_layer_height_from_nozzle(print_config, object_config.support_material_interface_extruder));
+            max_layer_height_from_nozzle(print_config, object_config.support_filament), 
+            max_layer_height_from_nozzle(print_config, object_config.support_interface_filament));
         params.max_suport_layer_height = params.max_layer_height;
     }
     if (object_extruders.empty()) {
@@ -112,10 +114,18 @@ SlicingParameters SlicingParameters::create_from_config(
 
     if (! soluble_interface) {
         params.gap_raft_object    = object_config.raft_contact_distance.value;
-        params.gap_object_support = object_config.support_material_bottom_contact_distance.value;
-        params.gap_support_object = object_config.support_material_contact_distance.value;
+        //BBS
+        //params.gap_object_support = object_config.support_bottom_z_distance.value;
+        params.gap_object_support = object_config.support_top_z_distance.value;
+        params.gap_support_object = object_config.support_top_z_distance.value;
         if (params.gap_object_support <= 0)
             params.gap_object_support = params.gap_support_object;
+
+        if (!object_config.independent_support_layer_height) {
+            params.gap_raft_object = std::round(params.gap_raft_object / object_config.layer_height + EPSILON) * object_config.layer_height;
+            params.gap_object_support = std::round(params.gap_object_support / object_config.layer_height + EPSILON) * object_config.layer_height;
+            params.gap_support_object = std::round(params.gap_support_object / object_config.layer_height + EPSILON) * object_config.layer_height;
+        }
     }
 
     if (params.base_raft_layers > 0) {
@@ -134,13 +144,13 @@ SlicingParameters SlicingParameters::create_from_config(
         //FIXME The last raft layer is the contact layer, which shall be printed with a bridging flow for ease of separation. Currently it is not the case.
 		if (params.raft_layers() == 1) {
             // There is only the contact layer.
-            params.contact_raft_layer_height = first_layer_height;
-            params.raft_contact_top_z        = first_layer_height;
+            params.contact_raft_layer_height = initial_layer_print_height;
+            params.raft_contact_top_z        = initial_layer_print_height;
 		} else {
             assert(params.base_raft_layers > 0);
             assert(params.interface_raft_layers > 0);
             // Number of the base raft layers is decreased by the first layer.
-            params.raft_base_top_z       = first_layer_height + coordf_t(params.base_raft_layers - 1) * params.base_raft_layer_height;
+            params.raft_base_top_z       = initial_layer_print_height + coordf_t(params.base_raft_layers - 1) * params.base_raft_layer_height;
             // Number of the interface raft layers is decreased by the contact layer.
             params.raft_interface_top_z  = params.raft_base_top_z + coordf_t(params.interface_raft_layers - 1) * params.interface_raft_layer_height;
 			params.raft_contact_top_z    = params.raft_interface_top_z + params.contact_raft_layer_height;
@@ -288,7 +298,12 @@ std::vector<double> layer_height_profile_adaptive(const SlicingParameters& slici
             }
         }
         */
-        
+        //BBS: avoid the layer height change to be too steep
+        if (layer_height_profile.back() < height && height - layer_height_profile.back() > LAYER_HEIGHT_CHANGE_STEP)
+            height = layer_height_profile.back() + LAYER_HEIGHT_CHANGE_STEP;
+        else if (layer_height_profile.back() > height && layer_height_profile.back() - height > LAYER_HEIGHT_CHANGE_STEP)
+            height = layer_height_profile.back() - LAYER_HEIGHT_CHANGE_STEP;
+
         layer_height_profile.push_back(print_z);
         layer_height_profile.push_back(height);
         print_z += height;
@@ -384,7 +399,32 @@ std::vector<double> smooth_height_profile(const std::vector<double>& profile, co
         return ret;
     };
 
-    return gauss_blur(profile, smoothing_params);
+    //BBS: avoid the layer height change to be too steep
+    auto has_steep_height_change = [&slicing_params](const std::vector<double>& profile, const double height_step) {
+        //BBS: skip first layer
+        size_t skip_count = slicing_params.first_object_layer_height_fixed() ? 4 : 0;
+        size_t size = profile.size();
+        //BBS: not enough data to smmoth, return false directly
+        if ((int)size - (int)skip_count < 6)
+            return false;
+
+        //BBS: Don't need to check the difference between top layer and the last 2th layer
+        for (size_t i = skip_count; i < size - 6; i += 2) {
+            if (abs(profile[i + 1] - profile[i + 3]) > height_step)
+                return true;
+        }
+        return false;
+    };
+
+    int count = 0;
+    std::vector<double> ret = profile;
+    bool has_steep_change = has_steep_height_change(ret, LAYER_HEIGHT_CHANGE_STEP);
+    while (has_steep_change && count < 6) {
+        ret = gauss_blur(ret, smoothing_params);
+        has_steep_change = has_steep_height_change(ret, LAYER_HEIGHT_CHANGE_STEP);
+        count++;
+    }
+    return ret;
 }
 
 void adjust_layer_height_profile(

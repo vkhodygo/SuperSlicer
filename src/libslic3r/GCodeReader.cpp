@@ -15,24 +15,14 @@
 
 namespace Slic3r {
 
-static inline char get_extrusion_axis_char(const GCodeConfig &config)
-{
-    std::string axis = get_extrusion_axis(config);
-    assert(axis.size() <= 1);
-    // Return 0 for gcfNoExtrusion
-    return axis.empty() ? 0 : axis[0];
-}
-
 void GCodeReader::apply_config(const GCodeConfig &config)
 {
     m_config = config;
-    m_extrusion_axis = get_extrusion_axis_char(m_config);
 }
 
 void GCodeReader::apply_config(const DynamicPrintConfig &config)
 {
     m_config.apply(config, true);
-    m_extrusion_axis = get_extrusion_axis_char(m_config);
 }
 
 const char* GCodeReader::parse_line_internal(const char *ptr, const char *end, GCodeLine &gline, std::pair<const char*, const char*> &command)
@@ -62,11 +52,13 @@ const char* GCodeReader::parse_line_internal(const char *ptr, const char *end, G
             case 'Y': axis = Y; break;
             case 'Z': axis = Z; break;
             case 'F': axis = F; break;
+            //BBS: add I and J axis
+            case 'I': axis = I; break;
+            case 'J': axis = J; break;
+            case 'E': axis = E; break;
+            case 'P': axis = P; break;
             default:
-                if (*c == m_extrusion_axis) {
-                    if (m_extrusion_axis != 0)
-                        axis = E;
-                } else if (*c >= 'A' && *c <= 'Z')
+                if (*c >= 'A' && *c <= 'Z')
                 	// Unknown axis, but we still want to remember that such a axis was seen.
                 	axis = UNKNOWN_AXIS;
                 break;
@@ -90,7 +82,7 @@ const char* GCodeReader::parse_line_internal(const char *ptr, const char *end, G
         }
     }
     
-    if (gline.has(E) && m_config.use_relative_e_distances)
+    if (gline.has(E) && RELATIVE_E_AXIS)
         m_position[E] = 0;
 
     // Skip the rest of the line.
@@ -119,7 +111,8 @@ void GCodeReader::update_coordinates(GCodeLine &gline, std::pair<const char*, co
     PROFILE_FUNC();
     if (*command.first == 'G') {
         int cmd_len = int(command.second - command.first);
-        if ((cmd_len == 2 && (command.first[1] == '0' || command.first[1] == '1')) ||
+        //BBS: add support of G2 and G3
+        if ((cmd_len == 2 && (command.first[1] == '0' || command.first[1] == '1' || command.first[1] == '2' || command.first[1] == '3')) ||
             (cmd_len == 3 &&  command.first[1] == '9' && command.first[2] == '2')) {
             for (size_t i = 0; i < NUM_AXES; ++ i)
                 if (gline.has(Axis(i)))
@@ -191,20 +184,34 @@ bool GCodeReader::parse_file_internal(const std::string &filename, ParseLineCall
     return this->parse_file_raw_internal(filename, 
         [this, &gline, parse_line_callback](const char *begin, const char *end) {
             gline.reset();
-            this->parse_line(begin, end, gline, parse_line_callback);
+
+            const char* begin_new = begin;
+            begin_new = skip_whitespaces(begin_new);
+            if (std::toupper(*begin_new) == 'N')
+                begin_new = skip_word(begin_new);
+            begin_new = skip_whitespaces(begin_new);
+            this->parse_line(begin_new, end, gline, parse_line_callback);
         }, 
         line_end_callback);
 }
 
 bool GCodeReader::parse_file(const std::string &file, callback_t callback)
 {
-    return this->parse_file_internal(file, callback, [](size_t){});
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(":  before parse_file %1%") % file.c_str();
+    auto ret = this->parse_file_internal(file, callback, [](size_t) {});
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(":  finished parse_file %1%") % file.c_str();
+
+    return ret;
 }
 
 bool GCodeReader::parse_file(const std::string &file, callback_t callback, std::vector<size_t> &lines_ends)
 {
     lines_ends.clear();
-    return this->parse_file_internal(file, callback, [&lines_ends](size_t file_pos){ lines_ends.emplace_back(file_pos); });
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(":  before parse_file %1%") % file.c_str();
+    auto ret = this->parse_file_internal(file, callback, [&lines_ends](size_t file_pos){ lines_ends.emplace_back(file_pos); });
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(":  finished parse_file %1%") % file.c_str();
+
+    return ret;
 }
 
 bool GCodeReader::parse_file_raw(const std::string &filename, raw_line_callback_t line_callback)
@@ -277,11 +284,14 @@ void GCodeReader::GCodeLine::set(const GCodeReader &reader, const Axis axis, con
         match[1] += int(axis);
     else if (axis == F)
         match[1] = 'F';
+    //BBS： handle I and J axis
+    else if (axis == I)
+        match[1] = 'I';
+    else if (axis == J)
+        match[1] = 'J';
     else {
         assert(axis == E);
-        // Extruder axis is set.
-        assert(reader.extrusion_axis() != 0);
-        match[1] = reader.extrusion_axis();
+        match[1] = 'E';
     }
 
     if (this->has(axis)) {

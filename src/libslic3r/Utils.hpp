@@ -8,6 +8,8 @@
 #include <system_error>
 
 #include <boost/system/error_code.hpp>
+#include <boost/algorithm/string.hpp>
+#include <openssl/md5.h>
 
 #include "libslic3r.h"
 
@@ -16,6 +18,8 @@ namespace boost { namespace filesystem { class directory_entry; }}
 namespace Slic3r {
 
 extern void set_logging_level(unsigned int level);
+extern unsigned int level_string_to_boost(std::string level);
+extern std::string  get_string_logging_level(unsigned level);
 extern unsigned get_logging_level();
 extern void trace(unsigned int level, const char *message);
 // Format memory allocated, separate thousands by comma.
@@ -40,6 +44,31 @@ void set_resources_dir(const std::string &path);
 // Return a full path to the resources directory.
 const std::string& resources_dir();
 
+//BBS: add temp dir
+void set_temporary_dir(const std::string &path);
+const std::string& temporary_dir();
+
+//BBS: convert 0.1.3.4 version format to 00.01.03.04 format, like AA.BB.CC.DD
+inline std::string convert_to_full_version(std::string short_version)
+{
+    std::string result = "";
+    std::vector<std::string> items;
+    boost::split(items, short_version, boost::is_any_of("."));
+    if (items.size() == 4) {
+        for (int i = 0; i < 4; i++) {
+            std::stringstream ss;
+            ss << std::setw(2) << std::setfill('0') << items[i];
+            result += ss.str();
+            if (i != 4 - 1)
+                result += ".";
+        }
+        return result;
+    }
+    return result;
+}
+
+
+
 // Set a path with GUI localization files.
 void set_local_dir(const std::string &path);
 // Return a full path to the localization directory.
@@ -58,10 +87,16 @@ void set_data_dir(const std::string &path);
 // Return a full path to the GUI resource files.
 const std::string& data_dir();
 
+// BBL: true: succeed create or dir exists; false: fail to create
+bool makedir(const std::string path);
+
 // Format an output path for debugging purposes.
 // Writes out the output path prefix to the console for the first time the function is called,
 // so the user knows where to search for the debugging output.
 std::string debug_out_path(const char *name, ...);
+// smaller level means less log. level=5 means saving all logs.
+void set_log_path_and_level(const std::string& file, unsigned int level);
+void flush_logs();
 
 // A special type for strings encoded in the local Windows 8-bit code page.
 // This type is only needed for Perl bindings to relay to Perl that the string is raw, not UTF-8 encoded.
@@ -108,6 +143,8 @@ extern bool is_img_file(const std::string& path);
 extern bool is_gallery_file(const boost::filesystem::directory_entry& path, char const* type);
 extern bool is_gallery_file(const std::string& path, char const* type);
 extern bool is_shapes_dir(const std::string& dir);
+//BBS: add json support
+extern bool is_json_file(const std::string& path);
 
 // File path / name / extension splitting utilities, working with UTF-8,
 // to be published to Perl.
@@ -134,6 +171,8 @@ std::string header_gcodeviewer_generated();
 
 // getpid platform wrapper
 extern unsigned get_current_pid();
+// BBS: backup & restore
+std::string get_process_name(int pid);
 
 // Compute the next highest power of 2 of 32-bit v
 // http://graphics.stanford.edu/~seander/bithacks.html
@@ -361,6 +400,46 @@ inline std::string get_time_dhms(float time_in_secs)
     return buffer;
 }
 
+inline std::string get_bbl_time_dhms(float time_in_secs)
+{
+    int days = (int)(time_in_secs / 86400.0f);
+    time_in_secs -= (float)days * 86400.0f;
+    int hours = (int)(time_in_secs / 3600.0f);
+    time_in_secs -= (float)hours * 3600.0f;
+    int minutes = (int)(time_in_secs / 60.0f);
+    time_in_secs -= (float)minutes * 60.0f;
+
+    char buffer[64];
+    if (days > 0)
+        ::sprintf(buffer, "%dd%dh%dm%ds", days, hours, minutes, (int)time_in_secs);
+    else if (hours > 0)
+        ::sprintf(buffer, "%dh%dm%ds", hours, minutes, (int)time_in_secs);
+    else if (minutes > 0)
+        ::sprintf(buffer, "%dm%ds", minutes, (int)time_in_secs);
+    else
+        ::sprintf(buffer, "%ds", (int)time_in_secs);
+
+    return buffer;
+}
+
+inline std::string get_timezone_utc_hm(long second)
+{
+    bool pos = true;
+    if (second < 0) {
+        pos = false;
+        second = -second;
+    }
+
+    int hours = (int)(second / 3600.0f);
+    second -= (float)hours * 3600.0f;
+    int minutes = (int)(second / 60.0f);
+    second -= (float)minutes * 60.0f;
+
+    char buffer[64];
+    ::sprintf(buffer, "UTC%s%02d:%02d", pos ? "+" : "-", hours, minutes);
+    return buffer;
+}
+
 inline std::string get_time_dhm(float time_in_secs)
 {
     int days = (int)(time_in_secs / 86400.0f);
@@ -376,9 +455,70 @@ inline std::string get_time_dhm(float time_in_secs)
         ::sprintf(buffer, "%dh %dm", hours, minutes);
     else if (minutes > 0)
         ::sprintf(buffer, "%dm", minutes);
+    else
+        ::sprintf(buffer, "%dm", 0);
 
     return buffer;
 }
+
+inline std::string get_time_hms(float time_in_secs)
+{
+    int hours = (int)(time_in_secs / 3600.0f);
+    time_in_secs -= (float)hours * 3600.0f;
+    int minutes = (int)(time_in_secs / 60.0f);
+    time_in_secs -= (float)minutes * 60.0f;
+    int secs = (int)time_in_secs;
+
+    char buffer[64];
+    ::sprintf(buffer, "%02d:%02d:%02d", hours, minutes, secs);
+    return buffer;
+}
+
+inline std::string get_bbl_monitor_time_dhm(float time_in_secs)
+{
+    int days = (int)(time_in_secs / 86400.0f);
+    time_in_secs -= (float)days * 86400.0f;
+    int hours = (int)(time_in_secs / 3600.0f);
+    time_in_secs -= (float)hours * 3600.0f;
+    int minutes = (int)(time_in_secs / 60.0f);
+
+    char buffer[64];
+    if (days > 0)
+        ::sprintf(buffer, "%dd%dh%dm", days, hours, minutes);
+    else if (hours > 0)
+        ::sprintf(buffer, "%dh%dm", hours, minutes);
+    else if (minutes >= 0)
+        ::sprintf(buffer, "%dm", minutes);
+    else {
+        return "";
+    }
+
+    return buffer;
+}
+
+inline std::string get_bbl_remain_time_dhms(float time_in_secs)
+{
+    int days = (int) (time_in_secs / 86400.0f);
+    time_in_secs -= (float) days * 86400.0f;
+    int hours = (int) (time_in_secs / 3600.0f);
+    time_in_secs -= (float) hours * 3600.0f;
+    int minutes = (int) (time_in_secs / 60.0f);
+    time_in_secs -= (float) minutes * 60.0f;
+
+    char buffer[64];
+    if (days > 0)
+        ::sprintf(buffer, "%dd%dh%dm%ds", days, hours, minutes, (int) time_in_secs);
+    else if (hours > 0)
+        ::sprintf(buffer, "%dh%dm%ds", hours, minutes, (int) time_in_secs);
+    else if (minutes > 0)
+        ::sprintf(buffer, "%dm%ds", minutes, (int) time_in_secs);
+    else
+        ::sprintf(buffer, "%ds", (int) time_in_secs);
+
+    return buffer;
+}
+
+bool bbl_calc_md5(std::string &filename, std::string &md5_out);
 
 } // namespace Slic3r
 

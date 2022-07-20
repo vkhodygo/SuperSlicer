@@ -60,9 +60,12 @@ namespace Slic3r {
 
         std::vector<double>                                 volumes_per_color_change;
         std::map<size_t, double>                            volumes_per_extruder;
+        //BBS: the flush amount of every filament
+        std::map<size_t, double>                            flush_per_filament;
         std::map<ExtrusionRole, std::pair<double, double>>  used_filaments_per_role;
 
         std::array<Mode, static_cast<size_t>(ETimeMode::Count)> modes;
+        unsigned int                                        total_filamentchanges;
 
         PrintEstimatedStatistics() { reset(); }
 
@@ -72,7 +75,9 @@ namespace Slic3r {
             }
             volumes_per_color_change.clear();
             volumes_per_extruder.clear();
+            flush_per_filament.clear();
             used_filaments_per_role.clear();
+            total_filamentchanges = 0;
         }
     };
 
@@ -108,7 +113,19 @@ namespace Slic3r {
             float temperature{ 0.0f }; // Celsius degrees
             float time{ 0.0f }; // s
 
+            //BBS: arc move related data
+            EMovePathType move_path_type{ EMovePathType::Noop_move };
+            Vec3f arc_center_position{ Vec3f::Zero() };      // mm
+            std::vector<Vec3f> interpolation_points;     // interpolation points of arc for drawing
+
             float volumetric_rate() const { return feedrate * mm3_per_mm; }
+            //BBS: new function to support arc move
+            bool is_arc_move_with_interpolation_points() const {
+                return (move_path_type == EMovePathType::Arc_move_ccw || move_path_type == EMovePathType::Arc_move_cw) && interpolation_points.size();
+            }
+            bool is_arc_move() const {
+                return move_path_type == EMovePathType::Arc_move_ccw || move_path_type == EMovePathType::Arc_move_cw;
+            }
         };
 
         std::string filename;
@@ -116,8 +133,12 @@ namespace Slic3r {
         std::vector<MoveVertex> moves;
         // Positions of ends of lines of the final G-code this->filename after TimeProcessor::post_process() finalizes the G-code.
         std::vector<size_t> lines_ends;
-        Pointfs bed_shape;
-        float max_print_height;
+        Pointfs printable_area;
+        //BBS: add bed exclude area
+        Pointfs bed_exclude_area;
+        //BBS: add toolpath_outside
+        bool toolpath_outside;
+        float printable_height;
         SettingsIds settings_ids;
         size_t extruders_count;
         std::vector<std::string> extruder_colors;
@@ -130,12 +151,41 @@ namespace Slic3r {
         int64_t time{ 0 };
 #endif // ENABLE_GCODE_VIEWER_STATISTICS
         void reset();
+
+        //BBS: add mutex for protection of gcode result
+        mutable std::mutex result_mutex;
+        GCodeProcessorResult& operator=(const GCodeProcessorResult &other)
+        {
+            filename = other.filename;
+            id = other.id;
+            moves = other.moves;
+            lines_ends = other.lines_ends;
+            printable_area = other.printable_area;
+            bed_exclude_area = other.bed_exclude_area;
+            toolpath_outside = other.toolpath_outside;
+            printable_height = other.printable_height;
+            settings_ids = other.settings_ids;
+            extruders_count = other.extruders_count;
+            extruder_colors = other.extruder_colors;
+            filament_diameters = other.filament_diameters;
+            filament_densities = other.filament_densities;
+            print_statistics = other.print_statistics;
+            custom_gcode_per_print_z = other.custom_gcode_per_print_z;
+#if ENABLE_GCODE_VIEWER_STATISTICS
+            time = other.time;
+#endif
+            return *this;
+        }
+        void  lock() const { result_mutex.lock(); }
+        void  unlock() const { result_mutex.unlock(); }
     };
 
 
     class GCodeProcessor
     {
         static const std::vector<std::string> Reserved_Tags;
+        static const std::string Flush_Start_Tag;
+        static const std::string Flush_End_Tag;
 
     public:
         enum class ETags : unsigned char
@@ -254,8 +304,15 @@ namespace Slic3r {
             {
                 float feedrate; // mm/s
                 float safe_feedrate; // mm/s
+                //BBS: feedrate of X-Y-Z-E axis. But when the move is G2 and G3, X-Y will be
+                //same value which means feedrate in X-Y plane.
                 AxisCoords axis_feedrate; // mm/s
                 AxisCoords abs_axis_feedrate; // mm/s
+
+                //BBS: unit vector of enter speed and exit speed in x-y-z space. 
+                //For line move, there are same. For arc move, there are different.
+                Vec3f enter_direction;
+                Vec3f exit_direction;
 
                 void reset();
             };
@@ -327,14 +384,12 @@ namespace Slic3r {
             // This is currently only really used by the MK3 MMU2:
             // extruder_unloaded = true means no filament is loaded yet, all the filaments are parked in the MK3 MMU2 unit.
             bool extruder_unloaded;
-            // whether or not to export post-process the gcode to export lines M73 in it
-            bool export_remaining_time_enabled;
             // allow to skip the lines M201/M203/M204/M205 generated by GCode::print_machine_envelope() for non-Normal time estimate mode
             bool machine_envelope_processing_enabled;
             MachineEnvelopeConfig machine_limits;
             // Additional load / unload times for a filament exchange sequence.
-            std::vector<float> filament_load_times;
-            std::vector<float> filament_unload_times;
+            float filament_load_times;
+            float filament_unload_times;
             std::array<TimeMachine, static_cast<size_t>(PrintEstimatedStatistics::ETimeMode::Count)> machines;
 
             void reset();
@@ -352,6 +407,9 @@ namespace Slic3r {
             double tool_change_cache;
             std::map<size_t, double> volumes_per_extruder;
 
+            //BBS: the flush amount of every filament
+            std::map<size_t, double> flush_per_filament;
+
             double role_cache;
             std::map<ExtrusionRole, std::pair<double, double>> filaments_per_role;
 
@@ -361,6 +419,7 @@ namespace Slic3r {
 
             void process_color_change_cache();
             void process_extruder_cache(GCodeProcessor* processor);
+            void update_flush_per_filament(size_t extrude_id, float flush_length);
             void process_role_cache(GCodeProcessor* processor);
             void process_caches(GCodeProcessor* processor);
 
@@ -502,12 +561,23 @@ namespace Slic3r {
         EPositioningType m_e_local_positioning_type;
         std::vector<Vec3f> m_extruder_offsets;
         GCodeFlavor m_flavor;
+        float       m_nozzle_volume;
 
         AxisCoords m_start_position; // mm
         AxisCoords m_end_position; // mm
         AxisCoords m_origin; // mm
         CachedPosition m_cached_position;
         bool m_wiping;
+        bool m_flushing;
+        float m_remaining_volume;
+
+        //BBS: x, y offset for gcode generated
+        double          m_x_offset{ 0 };
+        double          m_y_offset{ 0 };
+        //BBS: arc move related data
+        EMovePathType m_move_path_type{ EMovePathType::Noop_move };
+        Vec3f m_arc_center{ Vec3f::Zero() };    // mm
+        std::vector<Vec3f> m_interpolation_points;
 
         unsigned int m_line_id;
         unsigned int m_last_line_id;
@@ -520,6 +590,7 @@ namespace Slic3r {
         float m_fan_speed; // percentage
         ExtrusionRole m_extrusion_role;
         unsigned char m_extruder_id;
+        unsigned char m_last_extruder_id;
         ExtruderColors m_extruder_colors;
         ExtruderTemps m_extruder_temps;
         float m_extruded_last_z;
@@ -528,7 +599,6 @@ namespace Slic3r {
         unsigned int m_g1_line_id;
         unsigned int m_layer_id;
         CpColor m_cp_color;
-        bool m_use_volumetric_e;
         SeamsDetector m_seams_detector;
         OptionsZCorrector m_options_z_corrector;
         size_t m_last_default_color_id;
@@ -539,7 +609,7 @@ namespace Slic3r {
         enum class EProducer
         {
             Unknown,
-            PrusaSlicer,
+            BambuStudio,
             Slic3rPE,
             Slic3r,
             SuperSlicer,
@@ -596,6 +666,9 @@ namespace Slic3r {
         std::vector<std::pair<ExtrusionRole, float>> get_roles_time(PrintEstimatedStatistics::ETimeMode mode) const;
         std::vector<float> get_layers_time(PrintEstimatedStatistics::ETimeMode mode) const;
 
+        //BBS: set offset for gcode writer
+        void set_xy_offset(double x, double y) { m_x_offset = x; m_y_offset = y; }
+
     private:
         void apply_config(const DynamicPrintConfig& config);
         void apply_config_simplify3d(const std::string& filename);
@@ -605,7 +678,7 @@ namespace Slic3r {
         // Process tags embedded into comments
         void process_tags(const std::string_view comment, bool producers_enabled);
         bool process_producers_tags(const std::string_view comment);
-        bool process_prusaslicer_tags(const std::string_view comment);
+        bool process_bambuslicer_tags(const std::string_view comment);
         bool process_cura_tags(const std::string_view comment);
         bool process_simplify3d_tags(const std::string_view comment);
         bool process_craftware_tags(const std::string_view comment);
@@ -617,6 +690,10 @@ namespace Slic3r {
         // Move
         void process_G0(const GCodeReader::GCodeLine& line);
         void process_G1(const GCodeReader::GCodeLine& line);
+        void process_G2_G3(const GCodeReader::GCodeLine& line);
+
+        // BBS: handle delay command
+        void process_G4(const GCodeReader::GCodeLine& line);
 
         // Retract
         void process_G10(const GCodeReader::GCodeLine& line);
@@ -638,6 +715,9 @@ namespace Slic3r {
 
         // Move to origin
         void process_G28(const GCodeReader::GCodeLine& line);
+
+        // BBS
+        void process_G29(const GCodeReader::GCodeLine& line);
 
         // Set to Absolute Positioning
         void process_G90(const GCodeReader::GCodeLine& line);
@@ -693,6 +773,9 @@ namespace Slic3r {
         // Set extrude factor override percentage
         void process_M221(const GCodeReader::GCodeLine& line);
 
+        // BBS: handle delay command. M400 is defined by BBL only
+        void process_M400(const GCodeReader::GCodeLine& line);
+
         // Repetier: Store x, y and z position
         void process_M401(const GCodeReader::GCodeLine& line);
 
@@ -709,7 +792,8 @@ namespace Slic3r {
         void process_T(const GCodeReader::GCodeLine& line);
         void process_T(const std::string_view command);
 
-        void store_move_vertex(EMoveType type);
+        //BBS: different path_type is only used for arc move
+        void store_move_vertex(EMoveType type, EMovePathType path_type = EMovePathType::Noop_move);
 
         void set_extrusion_role(ExtrusionRole role);
 

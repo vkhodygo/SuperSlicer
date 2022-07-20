@@ -417,7 +417,8 @@ void ObjectClipper::render_cut() const
         clipper->set_transformation(trafo);
         clipper->set_limiting_plane(ClippingPlane(Vec3d::UnitZ(), -SINKING_Z_THRESHOLD));
         glsafe(::glPushMatrix());
-        glsafe(::glColor3f(1.0f, 0.37f, 0.0f));
+        // BBS
+        glsafe(::glColor3f(0.25f, 0.25f, 0.25f));
         clipper->render_cut();
         glsafe(::glPopMatrix());
 
@@ -432,7 +433,11 @@ void ObjectClipper::set_position(double pos, bool keep_normal)
     int active_inst = get_pool()->selection_info()->get_active_instance();
     double z_shift = get_pool()->selection_info()->get_sla_shift();
 
-    Vec3d normal = (keep_normal && m_clp) ? m_clp->get_normal() : -wxGetApp().plater()->get_camera().get_dir_forward();
+    Vec3d camera_dir = wxGetApp().plater()->get_camera().get_dir_forward();
+    if (abs(camera_dir(0)) > EPSILON || abs(camera_dir(1)) > EPSILON)
+        camera_dir(2) = 0;
+
+    Vec3d normal = (keep_normal && m_clp) ? m_clp->get_normal() : -camera_dir;
     const Vec3d& center = mo->instances[active_inst]->get_offset() + Vec3d(0., 0., z_shift);
     float dist = normal.dot(center);
 

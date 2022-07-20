@@ -13,6 +13,7 @@
 namespace Slic3r {
 namespace GUI {
 
+static double g_normal_precise = 0.0015;
 
 GLGizmoFlatten::GLGizmoFlatten(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id)
     : GLGizmoBase(parent, icon_filename, sprite_id)
@@ -23,7 +24,8 @@ GLGizmoFlatten::GLGizmoFlatten(GLCanvas3D& parent, const std::string& icon_filen
 
 bool GLGizmoFlatten::on_init()
 {
-    m_shortcut_key = WXK_CONTROL_F;
+    // BBS
+    m_shortcut_key = WXK_NONE;
     return true;
 }
 
@@ -38,7 +40,7 @@ CommonGizmosDataID GLGizmoFlatten::on_get_requirements() const
 
 std::string GLGizmoFlatten::on_get_name() const
 {
-    return _u8L("Place on face");
+    return _u8L("Lay on face");
 }
 
 bool GLGizmoFlatten::on_is_activable() const
@@ -75,9 +77,9 @@ void GLGizmoFlatten::on_render()
             update_planes();
         for (int i = 0; i < (int)m_planes.size(); ++i) {
             if (i == m_hover_id)
-                glsafe(::glColor4f(0.9f, 0.9f, 0.9f, 0.75f));
+                glsafe(::glColor4fv(GLGizmoBase::FLATTEN_HOVER_COLOR.data()));
             else
-                glsafe(::glColor4f(0.9f, 0.9f, 0.9f, 0.5f));
+                glsafe(::glColor4fv(GLGizmoBase::FLATTEN_COLOR.data()));
 
             if (m_planes[i].vbo.has_VBOs())
                 m_planes[i].vbo.render();
@@ -138,8 +140,8 @@ void GLGizmoFlatten::update_planes()
     const Transform3d& inst_matrix = mo->instances.front()->get_matrix(true);
 
     // Following constants are used for discarding too small polygons.
-    const float minimal_area = 5.f; // in square mm (world coordinates)
-    const float minimal_side = 1.f; // mm
+    const float minimal_area = 4.f; // in square mm (world coordinates)
+    const float minimal_side = 2.f; // mm
 
     // Now we'll go through all the facets and append Points of facets sharing the same normal.
     // This part is still performed in mesh coordinate system.
@@ -167,7 +169,7 @@ void GLGizmoFlatten::update_planes()
         while (facet_queue_cnt > 0) {
             int facet_idx = facet_queue[-- facet_queue_cnt];
             const stl_normal& this_normal = face_normals[facet_idx];
-            if (std::abs(this_normal(0) - (*normal_ptr)(0)) < 0.001 && std::abs(this_normal(1) - (*normal_ptr)(1)) < 0.001 && std::abs(this_normal(2) - (*normal_ptr)(2)) < 0.001) {
+            if (std::abs(this_normal(0) - (*normal_ptr)(0)) <= g_normal_precise && std::abs(this_normal(1) - (*normal_ptr)(1)) <= g_normal_precise && std::abs(this_normal(2) - (*normal_ptr)(2)) <= g_normal_precise) {
                 const Vec3i face = ch.its.indices[facet_idx];
                 for (int j=0; j<3; ++j)
                     m_planes.back().vertices.emplace_back(ch.its.vertices[face[j]].cast<double>());
@@ -234,17 +236,27 @@ void GLGizmoFlatten::update_planes()
             discard = true;
         else {
             // We also check the inner angles and discard polygons with angles smaller than the following threshold
-            const double angle_threshold = ::cos(10.0 * (double)PI / 180.0);
+            const double angle_threshold = ::cos(9.0 * (double)PI / 180.0);
+            int count = 0, side_count = polygon.size();
 
-            for (unsigned int i = 0; i < polygon.size(); ++i) {
+            for (unsigned int i = 0; i < side_count; ++i) {
                 const Vec3d& prec = polygon[(i == 0) ? polygon.size() - 1 : i - 1];
                 const Vec3d& curr = polygon[i];
                 const Vec3d& next = polygon[(i == polygon.size() - 1) ? 0 : i + 1];
+                double len = (next - curr).norm();
+                if (len >= minimal_side)
+                    count ++;
 
                 if ((prec - curr).normalized().dot((next - curr).normalized()) > angle_threshold) {
                     discard = true;
                     break;
                 }
+            }
+            if (!discard
+                //&& ((side_count == 3) || (side_count == 5))
+                && (side_count <= 5)
+                && (count <= 2)) {
+                discard = true;
             }
         }
 
@@ -257,14 +269,14 @@ void GLGizmoFlatten::update_planes()
         Vec3d centroid = std::accumulate(polygon.begin(), polygon.end(), Vec3d(0.0, 0.0, 0.0));
         centroid /= (double)polygon.size();
         for (auto& vertex : polygon)
-            vertex = 0.9f*vertex + 0.1f*centroid;
+            vertex = 0.95f*vertex + 0.05f*centroid;
 
         // Polygon is now simple and convex, we'll round the corners to make them look nicer.
         // The algorithm takes a vertex, calculates middles of respective sides and moves the vertex
         // towards their average (controlled by 'aggressivity'). This is repeated k times.
         // In next iterations, the neighbours are not always taken at the middle (to increase the
         // rounding effect at the corners, where we need it most).
-        const unsigned int k = 10; // number of iterations
+        /*const unsigned int k = 10; // number of iterations
         const float aggressivity = 0.2f;  // agressivity
         const unsigned int N = polygon.size();
         std::vector<std::pair<unsigned int, unsigned int>> neighbours;
@@ -296,7 +308,7 @@ void GLGizmoFlatten::update_planes()
                 }
             }
             polygon = points_out; // replace the coarse polygon with the smooth one that we just created
-        }
+        }*/
 
 
         // Raise a bit above the object surface to avoid flickering:
@@ -309,7 +321,7 @@ void GLGizmoFlatten::update_planes()
 
     // We'll sort the planes by area and only keep the 254 largest ones (because of the picking pass limitations):
     std::sort(m_planes.rbegin(), m_planes.rend(), [](const PlaneData& a, const PlaneData& b) { return a.area < b.area; });
-    m_planes.resize(std::min((int)m_planes.size(), 254));
+    m_planes.resize(std::min((int)m_planes.size(), 512));
 
     // Planes are finished - let's save what we calculated it from:
     m_volumes_matrices.clear();

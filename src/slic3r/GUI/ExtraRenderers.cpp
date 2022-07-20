@@ -1,9 +1,9 @@
 #include "ExtraRenderers.hpp"
 #include "wxExtensions.hpp"
 #include "GUI.hpp"
-#include "I18N.hpp"
 #include "BitmapComboBox.hpp"
 #include "Plater.hpp"
+#include "Widgets/ComboBox.hpp"
 
 #include <wx/dc.h>
 #ifdef wxHAS_GENERIC_DATAVIEWCTRL
@@ -259,23 +259,23 @@ bool BitmapChoiceRenderer::GetValue(wxVariant& value) const
 
 bool BitmapChoiceRenderer::Render(wxRect rect, wxDC* dc, int state)
 {
-    int xoffset = 0;
+//    int xoffset = 0;
 
     const wxBitmap& icon = m_value.GetBitmap();
     if (icon.IsOk())
     {
         dc->DrawBitmap(icon, rect.x, rect.y + (rect.height - icon.GetHeight()) / 2);
-        xoffset = icon.GetWidth() + 4;
+//        xoffset = icon.GetWidth() + 4;
 
-        if (rect.height==0)
-          rect.height= icon.GetHeight();
+        if (rect.height == 0)
+          rect.height = icon.GetHeight();
     }
 
 #ifdef _WIN32
     // workaround for Windows DarkMode : Don't respect to the state & wxDATAVIEW_CELL_SELECTED to avoid update of the text color
-    RenderText(m_value.GetText(), xoffset, rect, dc, state & wxDATAVIEW_CELL_SELECTED ? 0 : state);
+//    RenderText(m_value.GetText(), xoffset, rect, dc, state & wxDATAVIEW_CELL_SELECTED ? 0 : state);
 #else
-    RenderText(m_value.GetText(), xoffset, rect, dc, state);
+//    RenderText(m_value.GetText(), xoffset, rect, dc, state);
 #endif
 
     return true;
@@ -283,10 +283,12 @@ bool BitmapChoiceRenderer::Render(wxRect rect, wxDC* dc, int state)
 
 wxSize BitmapChoiceRenderer::GetSize() const
 {
-    wxSize sz = GetTextExtent(m_value.GetText());
+    wxSize sz;// = GetTextExtent(m_value.GetText());
 
-    if (m_value.GetBitmap().IsOk())
+    if (m_value.GetBitmap().IsOk()) {
         sz.x += m_value.GetBitmap().GetWidth() + 4;
+        sz.y = m_value.GetBitmap().GetHeight() + 4;
+    }
 
     return sz;
 }
@@ -304,30 +306,36 @@ wxWindow* BitmapChoiceRenderer::CreateEditorCtrl(wxWindow* parent, wxRect labelR
     DataViewBitmapText data;
     data << value;
 
-#ifdef _WIN32
-    Slic3r::GUI::BitmapComboBox* c_editor = new Slic3r::GUI::BitmapComboBox(parent, wxID_ANY, wxEmptyString,
-#else
-    auto c_editor = new wxBitmapComboBox(parent, wxID_ANY, wxEmptyString,
-#endif
-        labelRect.GetTopLeft(), wxSize(labelRect.GetWidth(), -1), 
-        0, nullptr , wxCB_READONLY);
-
-    int def_id = get_default_extruder_idx ? get_default_extruder_idx() : 0;
-    c_editor->Append(_L("default"), def_id < 0 ? wxNullBitmap : *icons[def_id]);
+    ::ComboBox *c_editor = new ::ComboBox(parent, wxID_ANY, wxEmptyString,
+        labelRect.GetTopLeft(), wxSize(labelRect.GetWidth(), -1),
+        0, nullptr, wxCB_READONLY | CB_NO_DROP_ICON | CB_NO_TEXT);
+    c_editor->GetDropDown().SetUseContentWidth(true);
+    // BBS
     for (size_t i = 0; i < icons.size(); i++)
         c_editor->Append(wxString::Format("%d", i+1), *icons[i]);
 
-    c_editor->SetSelection(atoi(data.GetText().c_str()));
+    c_editor->SetSelection(atoi(data.GetText().c_str()) - 1);
 
     
-#ifdef __linux__
-    c_editor->Bind(wxEVT_COMBOBOX, [this](wxCommandEvent& evt) {
+#ifndef _WIN32
+    c_editor->Bind(wxEVT_COMBOBOX, [this, c_editor](wxCommandEvent& evt) {
         // to avoid event propagation to other sidebar items
         evt.StopPropagation();
         // FinishEditing grabs new selection and triggers config update. We better call
         // it explicitly, automatic update on KILL_FOCUS didn't work on Linux.
+        c_editor->SetClientData(this);
         this->FinishEditing();
     });
+    c_editor->Bind(wxEVT_COMBOBOX_DROPDOWN, [this, c_editor](wxCommandEvent& evt) {
+        c_editor->SetClientData(this);
+        this->FinishEditing();
+    });
+    c_editor->Bind(wxEVT_KILL_FOCUS, [this, c_editor](wxFocusEvent& evt) {
+        if (!c_editor->GetDropDown().IsShown() && c_editor->GetClientData() == nullptr) { // TODO: Fix called twice
+            c_editor->SetClientData(this);
+            this->FinishEditing();
+        }
+    }, c_editor->GetId());
 #else
     // to avoid event propagation to other sidebar items
     c_editor->Bind(wxEVT_COMBOBOX, [](wxCommandEvent& evt) { evt.StopPropagation(); });
@@ -338,7 +346,7 @@ wxWindow* BitmapChoiceRenderer::CreateEditorCtrl(wxWindow* parent, wxRect labelR
 
 bool BitmapChoiceRenderer::GetValueFromEditorCtrl(wxWindow* ctrl, wxVariant& value)
 {
-    wxBitmapComboBox* c = static_cast<wxBitmapComboBox*>(ctrl);
+    ::ComboBox*c         = static_cast<::ComboBox *>(ctrl);
     int selection = c->GetSelection();
     if (selection < 0)
         return false;
@@ -351,7 +359,6 @@ bool BitmapChoiceRenderer::GetValueFromEditorCtrl(wxWindow* ctrl, wxVariant& val
     value << bmpText;
     return true;
 }
-
 
 // ----------------------------------------------------------------------------
 // TextRenderer

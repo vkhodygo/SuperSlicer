@@ -194,7 +194,6 @@ SLAPrint::ApplyStatus SLAPrint::apply(const Model &model, DynamicPrintConfig con
     config.option("sla_print_settings_id",        true);
     config.option("sla_material_settings_id",     true);
     config.option("printer_settings_id",          true);
-    config.option("physical_printer_settings_id", true);
     // Collect changes to print config.
     t_config_option_keys print_diff    = m_print_config.diff(config);
     t_config_option_keys printer_diff  = m_printer_config.diff(config);
@@ -230,7 +229,6 @@ SLAPrint::ApplyStatus SLAPrint::apply(const Model &model, DynamicPrintConfig con
         m_placeholder_parser.set("print_preset",            config.option("sla_print_settings_id")->clone());
         m_placeholder_parser.set("material_preset",         config.option("sla_material_settings_id")->clone());
         m_placeholder_parser.set("printer_preset",          config.option("printer_settings_id")->clone());
-        m_placeholder_parser.set("physical_printer_preset", config.option("physical_printer_settings_id")->clone());
     }
 
     // It is also safe to change m_config now after this->invalidate_state_by_config_options() call.
@@ -612,10 +610,10 @@ void SLAPrint::finalize()
 std::string SLAPrint::output_filename(const std::string &filename_base) const
 {
     DynamicConfig config = this->finished() ? this->print_statistics().config() : this->print_statistics().placeholders();
-    return this->PrintBase::output_filename(m_print_config.output_filename_format.value, ".sl1", filename_base, &config);
+    return this->PrintBase::output_filename(m_print_config.filename_format.value, ".sl1", filename_base, &config);
 }
 
-std::string SLAPrint::validate(std::string*) const
+StringObjectException SLAPrint::validate(StringObjectException *exception, Polygons *collison_polygons, std::vector<std::pair<Polygon, float>> *height_polygons) const
 {
     for(SLAPrintObject * po : m_objects) {
 
@@ -625,8 +623,8 @@ std::string SLAPrint::validate(std::string*) const
         if(supports_en &&
            mo->sla_points_status == sla::PointsStatus::UserModified &&
            mo->sla_support_points.empty())
-            return L("Cannot proceed without support points! "
-                     "Add support points or disable support generation.");
+            return {L("Cannot proceed without support points! "
+                     "Add support points or disable support generation."), po};
 
         sla::SupportTreeConfig cfg = make_support_cfg(po->config());
 
@@ -636,21 +634,21 @@ std::string SLAPrint::validate(std::string*) const
         sla::PadConfig::EmbedObject &builtinpad = padcfg.embed_object;
         
         if(supports_en && !builtinpad.enabled && elv < cfg.head_fullwidth())
-            return L(
+            return {L(
                 "Elevation is too low for object. Use the \"Pad around "
-                "object\" feature to print the object without elevation.");
+                "object\" feature to print the object without elevation."), po};
         
         if(supports_en && builtinpad.enabled &&
            cfg.pillar_base_safety_distance_mm < builtinpad.object_gap_mm) {
-            return L(
+            return {L(
                 "The endings of the support pillars will be deployed on the "
                 "gap between the object and the pad. 'Support base safety "
                 "distance' has to be greater than the 'Pad object gap' "
-                "parameter to avoid this.");
+                "parameter to avoid this."), po};
         }
         
         std::string pval = padcfg.validate();
-        if (!pval.empty()) return pval;
+        if (!pval.empty()) return {pval, po};
     }
 
     double expt_max = m_printer_config.max_exposure_time.getFloat();
@@ -658,16 +656,16 @@ std::string SLAPrint::validate(std::string*) const
     double expt_cur = m_material_config.exposure_time.getFloat();
 
     if (expt_cur < expt_min || expt_cur > expt_max)
-        return L("Exposition time is out of printer profile bounds.");
+        return {L("Exposition time is out of printer profile bounds.")};
 
     double iexpt_max = m_printer_config.max_initial_exposure_time.getFloat();
     double iexpt_min = m_printer_config.min_initial_exposure_time.getFloat();
     double iexpt_cur = m_material_config.initial_exposure_time.getFloat();
 
     if (iexpt_cur < iexpt_min || iexpt_cur > iexpt_max)
-        return L("Initial exposition time is out of printer profile bounds.");
+        return {L("Initial exposition time is out of printer profile bounds.")};
 
-    return "";
+    return {};
 }
 
 void SLAPrint::set_printer(SLAArchive *arch)
@@ -839,10 +837,10 @@ bool SLAPrint::invalidate_state_by_config_options(const std::vector<t_config_opt
     };
 
     static std::unordered_set<std::string> steps_ignore = {
-        "bed_shape",
-        "max_print_height",
+        "printable_area",
+        "printable_height",
         "printer_technology",
-        "output_filename_format",
+        "filename_format",
         "fast_tilt_time",
         "slow_tilt_time",
         "area_fill",
@@ -932,9 +930,7 @@ bool SLAPrintObject::invalidate_state_by_config_options(const std::vector<t_conf
             || opt_key == "supports_enable"
             || opt_key == "support_object_elevation"
             || opt_key == "pad_around_object"
-            || opt_key == "pad_around_object_everywhere"
-            || opt_key == "slice_closing_radius"
-            || opt_key == "slicing_mode") {
+            || opt_key == "pad_around_object_everywhere") {
             steps.emplace_back(slaposObjectSlice);
         } else if (
                opt_key == "support_points_density_relative"

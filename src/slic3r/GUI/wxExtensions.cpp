@@ -16,6 +16,8 @@
 #include "Plater.hpp"
 #include "../Utils/MacDarkMode.hpp"
 #include "BitmapComboBox.hpp"
+#include "Widgets/StaticBox.hpp"
+#include "Widgets/Label.hpp"
 
 #ifndef __linux__
 // msw_menuitem_bitmaps is used for MSW and OSX
@@ -430,12 +432,13 @@ wxBitmap create_scaled_bitmap(  const std::string& bmp_name_in,
                                 const int px_cnt/* = 16*/, 
                                 const bool grayscale/* = false*/,
                                 const std::string& new_color/* = std::string()*/, // color witch will used instead of orange
-                                const bool menu_bitmap/* = false*/)
+                                const bool menu_bitmap/* = false*/,
+                                const bool resize/* = false*/)
 {
     static Slic3r::GUI::BitmapCache cache;
 
     unsigned int width = 0;
-    unsigned int height = (unsigned int)(em_unit(win) * px_cnt * 0.1f + 0.5f);
+    unsigned int height = (unsigned int) (win->FromDIP(px_cnt) + 0.5f);
 
     std::string bmp_name = bmp_name_in;
     boost::replace_last(bmp_name, ".png", "");
@@ -447,9 +450,9 @@ wxBitmap create_scaled_bitmap(  const std::string& bmp_name_in,
         Slic3r::GUI::wxGetApp().dark_mode();
 
     // Try loading an SVG first, then PNG if SVG is not found:
-    wxBitmap *bmp = cache.load_svg(bmp_name, width, height, grayscale, dark_mode, new_color);
+    wxBitmap *bmp = cache.load_svg(bmp_name, width, height, grayscale, dark_mode, new_color, resize ? em_unit(win) * 0.1f : 0.f);
     if (bmp == nullptr) {
-        bmp = cache.load_png(bmp_name, width, height, grayscale);
+        bmp = cache.load_png(bmp_name, width, height, grayscale, resize ? em_unit(win) * 0.1f : 0.f);
     }
 
     if (bmp == nullptr) {
@@ -478,21 +481,40 @@ std::vector<wxBitmap*> get_extruder_color_icons(bool thin_icon/* = false*/)
      * and scale them in respect to em_unit value
      */
     const double em = Slic3r::GUI::wxGetApp().em_unit();
-    const int icon_width = lround((thin_icon ? 1.6 : 3.2) * em);
-    const int icon_height = lround(1.6 * em);
+    const int icon_width = lround((thin_icon ? 2 : 4.5) * em);
+    const int icon_height = lround(2 * em);
 
     bool dark_mode = Slic3r::GUI::wxGetApp().dark_mode();
 
-    for (const std::string& color : colors)
+    int index = 0;
+    wxClientDC cdc((wxWindow*)Slic3r::GUI::wxGetApp().mainframe);
+    wxMemoryDC dc(&cdc);
+    dc.SetFont(::Label::Body_12);
+    for (const std::string &color : colors)
     {
-        std::string bitmap_key = color + "-h" + std::to_string(icon_height) + "-w" + std::to_string(icon_width);
+        auto label = std::to_string(++index);
+        std::string bitmap_key = color + "-h" + std::to_string(icon_height) + "-w" + std::to_string(icon_width) 
+                + "-i" + label;
 
         wxBitmap* bitmap = bmp_cache.find(bitmap_key);
         if (bitmap == nullptr) {
             // Paint the color icon.
-            Slic3r::GUI::BitmapCache::parse_color(color, rgb);
+            //Slic3r::GUI::BitmapCache::parse_color(color, rgb);
             // there is no neede to scale created solid bitmap
-            bitmap = bmp_cache.insert(bitmap_key, bmp_cache.mksolid(icon_width, icon_height, rgb, true, 1, dark_mode));
+            wxColor clr(color);
+            bitmap = bmp_cache.insert(bitmap_key, wxBitmap(icon_width, icon_height));
+            dc.SelectObject(*bitmap);
+            dc.SetBackground(wxBrush(clr));
+            dc.Clear();
+            if (clr.Red() > 224 && clr.Blue() > 224 && clr.Green() > 224) {
+                dc.SetBrush(wxBrush(clr));
+                dc.SetPen(*wxGREY_PEN);
+                dc.DrawRectangle(0, 0, icon_width, icon_height);
+            }
+            auto size = dc.GetTextExtent(wxString(label));
+            dc.SetTextForeground(clr.GetLuminance() < 0.51 ? *wxWHITE : *wxBLACK);
+            dc.DrawText(label, (icon_width - size.x) / 2, (icon_height - size.y) / 2);
+            dc.SelectObject(wxNullBitmap);
         }
         bmps.emplace_back(bitmap);
     }
@@ -560,10 +582,10 @@ LockButton::LockButton( wxWindow *parent,
                         const wxSize& size /*= wxDefaultSize*/):
                         wxButton(parent, id, wxEmptyString, pos, size, wxBU_EXACTFIT | wxNO_BORDER)
 {
-    m_bmp_lock_closed   = ScalableBitmap(this, "lock_closed");
-    m_bmp_lock_closed_f = ScalableBitmap(this, "lock_closed_f");
-    m_bmp_lock_open     = ScalableBitmap(this, "lock_open");
-    m_bmp_lock_open_f   = ScalableBitmap(this, "lock_open_f");
+    m_bmp_lock_closed   = ScalableBitmap(this, "lock_normal");
+    m_bmp_lock_closed_f = ScalableBitmap(this, "lock_hover");
+    m_bmp_lock_open     = ScalableBitmap(this, "unlock_normal");
+    m_bmp_lock_open_f   = ScalableBitmap(this, "unlock_hover");
 
     Slic3r::GUI::wxGetApp().UpdateDarkUI(this);
     SetBitmap(m_bmp_lock_open.bmp());
@@ -640,8 +662,8 @@ ModeButton::ModeButton( wxWindow*           parent,
 void ModeButton::Init(const wxString &mode)
 {
     std::string mode_str = std::string(mode.ToUTF8());
-    m_tt_focused  = Slic3r::GUI::from_u8((boost::format(_utf8(L("Switch to the %s mode"))) % mode_str).str());
-    m_tt_selected = Slic3r::GUI::from_u8((boost::format(_utf8(L("Current mode is %s"))) % mode_str).str());
+    //m_tt_focused  = Slic3r::GUI::from_u8((boost::format(_utf8(L("Switch to the %s mode"))) % mode_str).str());
+    //m_tt_selected = Slic3r::GUI::from_u8((boost::format(_utf8(L("Current mode is %s"))) % mode_str).str());
 
     SetBitmapMargins(3, 0);
 
@@ -704,10 +726,9 @@ ModeSizer::ModeSizer(wxWindow *parent, int hgap/* = 0*/) :
     SetFlexibleDirection(wxHORIZONTAL);
 
     std::vector < std::pair < wxString, std::string >> buttons = {
-        {_(L("Simple")),    "mode_simple"},
-//        {_(L("Advanced")),  "mode_advanced"},
-        {_CTX(L_CONTEXT("Advanced", "Mode"), "Mode"), "mode_advanced"},
-        {_(L("Expert")),    "mode_expert"},
+        //{_(L("Simple")),    "mode_simple"},
+        //{_(L("Advanced")),  "mode_advanced"},
+        //{_CTX(L_CONTEXT("Advanced", "Mode"), "Mode"), "mode_advanced"}
     };
 
     auto modebtnfn = [](wxCommandEvent &event, int mode_id) {
@@ -777,16 +798,23 @@ void MenuWithSeparators::SetSecondSeparator()
 }
 
 // ----------------------------------------------------------------------------
-// PrusaBitmap
+// BambuBitmap
 // ----------------------------------------------------------------------------
 ScalableBitmap::ScalableBitmap( wxWindow *parent, 
                                 const std::string& icon_name/* = ""*/,
                                 const int px_cnt/* = 16*/, 
-                                const bool grayscale/* = false*/):
+                                const bool grayscale/* = false*/,
+                                const bool resize/* = false*/):
     m_parent(parent), m_icon_name(icon_name),
-    m_px_cnt(px_cnt)
+    m_px_cnt(px_cnt), m_grayscale(grayscale), m_resize(resize) // BBS: support resize by fill border
 {
-    m_bmp = create_scaled_bitmap(icon_name, parent, px_cnt, grayscale);
+    m_bmp = create_scaled_bitmap(icon_name, parent, px_cnt, m_grayscale, std::string(), false, resize);
+    if (px_cnt == 0) {
+        m_px_cnt = m_bmp.GetHeight(); // scale
+        unsigned int height = (unsigned int) (parent->FromDIP(m_px_cnt) + 0.5f);
+        if (height != GetBmpHeight())
+            msw_rescale();
+    }
 }
 
 wxSize ScalableBitmap::GetBmpSize() const
@@ -819,11 +847,12 @@ int ScalableBitmap::GetBmpHeight() const
 
 void ScalableBitmap::msw_rescale()
 {
-    m_bmp = create_scaled_bitmap(m_icon_name, m_parent, m_px_cnt, m_grayscale);
+    // BBS: support resize by fill border
+    m_bmp = create_scaled_bitmap(m_icon_name, m_parent, m_px_cnt, m_grayscale, std::string(), false, m_resize);
 }
 
 // ----------------------------------------------------------------------------
-// PrusaButton
+// BambuButton
 // ----------------------------------------------------------------------------
 
 ScalableButton::ScalableButton( wxWindow *          parent,
@@ -841,6 +870,7 @@ ScalableButton::ScalableButton( wxWindow *          parent,
     m_px_cnt(bmp_px_cnt),
     m_has_border(!(style & wxNO_BORDER))
 {
+    SetBackgroundColour(StaticBox::GetParentBackgroundColor(parent));
     Create(parent, id, label, pos, size, style);
     Slic3r::GUI::wxGetApp().UpdateDarkUI(this);
 
@@ -927,9 +957,10 @@ void ScalableButton::msw_rescale()
     if (!m_current_icon_name.empty()) {
         wxBitmap bmp = create_scaled_bitmap(m_current_icon_name, m_parent, m_px_cnt);
         SetBitmap(bmp);
-        SetBitmapCurrent(bmp);
-        SetBitmapPressed(bmp);
-        SetBitmapFocus(bmp);
+        // BBS: why disappear on hover? why current HBITMAP differ from other 
+        //SetBitmapCurrent(bmp);
+        //SetBitmapPressed(bmp);
+        //SetBitmapFocus(bmp);
         if (!m_disabled_icon_name.empty())
             SetBitmapDisabled(create_scaled_bitmap(m_disabled_icon_name, m_parent, m_px_cnt));
         else if (m_use_default_disabled_bitmap)
@@ -977,6 +1008,111 @@ void BlinkingBitmap::blink()
 {
     show = !show;
     this->SetBitmap(show ? bmp.bmp() : wxNullBitmap);
+}
+
+
+wxIMPLEMENT_CLASS(ImageTransientPopup,wxPopupTransientWindow);
+
+wxBEGIN_EVENT_TABLE(ImageTransientPopup,wxPopupTransientWindow)
+    EVT_MOUSE_EVENTS( ImageTransientPopup::OnMouse )
+    EVT_SIZE( ImageTransientPopup::OnSize )
+    EVT_SET_FOCUS( ImageTransientPopup::OnSetFocus )
+    EVT_KILL_FOCUS( ImageTransientPopup::OnKillFocus )
+wxEND_EVENT_TABLE()
+
+ImageTransientPopup::ImageTransientPopup( wxWindow *parent, bool scrolled, wxBitmap bmp)
+                     :wxPopupTransientWindow( parent,
+                                              wxBORDER_NONE |
+                                              wxPU_CONTAINS_CONTROLS )
+{
+    m_panel = new wxScrolledWindow( this, wxID_ANY );
+    m_panel->SetBackgroundColour( *wxLIGHT_GREY );
+
+    // Keep this code to verify if mouse events work, they're required if
+    // you're making a control like a combobox where the items are highlighted
+    // under the cursor, the m_panel is set focus in the Popup() function
+    m_panel->Bind(wxEVT_MOTION, &ImageTransientPopup::OnMouse, this);
+
+    m_image = new wxStaticBitmap(m_panel,
+        wxID_ANY, bmp);
+
+    wxBoxSizer *topSizer = new wxBoxSizer( wxVERTICAL );
+    topSizer->Add(m_image, 1, wxCENTRE | wxALL | wxEXPAND, 0);
+    topSizer->SetMinSize(300, 300);
+
+    if ( scrolled )
+    {
+        // Add a big window to ensure that scrollbars are shown when we set the
+        // panel size to a lesser size below.
+        topSizer->Add(new wxPanel(m_panel, wxID_ANY, wxDefaultPosition,
+                                  wxSize(600, 600)));
+    }
+
+    m_panel->SetSizer( topSizer );
+    if ( scrolled )
+    {
+        // Set the fixed size to ensure that the scrollbars are shown.
+        m_panel->SetSize(300, 300);
+
+        // And also actually enable them.
+        m_panel->SetScrollRate(10, 10);
+    }
+    else
+    {
+        // Use the fitting size for the panel if we don't need scrollbars.
+        topSizer->Fit(m_panel);
+    }
+
+    SetClientSize(m_panel->GetSize());
+}
+
+ImageTransientPopup::~ImageTransientPopup()
+{
+}
+
+void ImageTransientPopup::SetImage(wxBitmap bmp)
+{
+    m_image->SetBitmap(bmp);
+    m_panel->Layout();
+}
+
+void ImageTransientPopup::Popup(wxWindow* WXUNUSED(focus))
+{
+    wxPopupTransientWindow::Popup();
+}
+
+void ImageTransientPopup::OnDismiss()
+{
+    wxPopupTransientWindow::OnDismiss();
+}
+
+bool ImageTransientPopup::ProcessLeftDown(wxMouseEvent& event)
+{
+    return wxPopupTransientWindow::ProcessLeftDown(event);
+}
+bool ImageTransientPopup::Show( bool show )
+{
+    return wxPopupTransientWindow::Show(show);
+}
+
+void ImageTransientPopup::OnSize(wxSizeEvent &event)
+{
+    event.Skip();
+}
+
+void ImageTransientPopup::OnSetFocus(wxFocusEvent &event)
+{
+    event.Skip();
+}
+
+void ImageTransientPopup::OnKillFocus(wxFocusEvent &event)
+{
+    event.Skip();
+}
+
+void ImageTransientPopup::OnMouse(wxMouseEvent &event)
+{
+    event.Skip();
 }
 
 

@@ -1,14 +1,14 @@
-#ifndef slic3r_Http_hpp_
-#define slic3r_Http_hpp_
+#ifndef __Http_hpp__
+#define __Http_hpp__
 
 #include <memory>
 #include <string>
 #include <functional>
 #include <boost/filesystem/path.hpp>
 
+#define MAX_SIZE_TO_FILE    3*1024
 
 namespace Slic3r {
-
 
 /// Represetns a Http request
 class Http : public std::enable_shared_from_this<Http> {
@@ -21,9 +21,14 @@ public:
 		size_t dlnow;     // Bytes downloaded so far
 		size_t ultotal;   // Total bytes to upload
 		size_t ulnow;     // Bytes uploaded so far
+        double upload_spd{0.0f};
 
 		Progress(size_t dltotal, size_t dlnow, size_t ultotal, size_t ulnow) :
 			dltotal(dltotal), dlnow(dlnow), ultotal(ultotal), ulnow(ulnow)
+		{}
+
+		Progress(size_t dltotal, size_t dlnow, size_t ultotal, size_t ulnow, double ulspd) :
+			dltotal(dltotal), dlnow(dlnow), ultotal(ultotal), ulnow(ulnow), upload_spd(ulspd)
 		{}
 	};
 
@@ -43,6 +48,8 @@ public:
 
 	typedef std::function<void(std::string/* address */)> IPResolveFn;
 
+	typedef std::function<void(std::string headers)> HeaderCallbackFn;
+
 	Http(Http &&other);
 
 	// Note: strings are expected to be UTF-8-encoded
@@ -52,6 +59,12 @@ public:
 	static Http get(std::string url);
 	static Http post(std::string url);
 	static Http put(std::string url);
+	static Http del(std::string url);
+
+	//BBS
+	static Http put2(std::string url);
+	static Http patch(std::string url);
+
 	~Http();
 
 	Http(const Http &) = delete;
@@ -77,15 +90,22 @@ public:
 	// specifically, this is supported with OpenSSL and NOT supported with Windows and OS X native certificate store.
 	// See also ca_file_supported().
 	Http& ca_file(const std::string &filename);
+
 	// Add a HTTP multipart form field
 	Http& form_add(const std::string &name, const std::string &contents);
 	// Add a HTTP multipart form file data contents, `name` is the name of the part
 	Http& form_add_file(const std::string &name, const boost::filesystem::path &path);
+	// Add a HTTP mime form field
+	Http& mime_form_add_text(std::string& name, std::string& value);
+	// Add a HTTP mime form file
+	Http& mime_form_add_file(std::string& name, const char* path);
+	// Same as above except also override the file's filename with a wstring type
+	Http& form_add_file(const std::wstring& name, const boost::filesystem::path& path);
 	// Same as above except also override the file's filename with a custom one
 	Http& form_add_file(const std::string &name, const boost::filesystem::path &path, const std::string &filename);
 
 #ifdef WIN32
-	// Tells libcurl to ignore certificate revocation checks in case of missing or offline distribution points for those SSL backends where such behavior is present. 
+	// Tells libcurl to ignore certificate revocation checks in case of missing or offline distribution points for those SSL backends where such behavior is present.
 	// This option is only supported for Schannel (the native Windows SSL library).
 	Http& ssl_revoke_best_effort(bool set);
 #endif // WIN32
@@ -105,6 +125,11 @@ public:
 	// This can be used for hosts which do not support multipart requests.
 	Http& set_put_body(const boost::filesystem::path &path);
 
+	// Set the file contents as a DELETE request body.
+	// The data is used verbatim, it is not additionally encoded in any way.
+	// This can be used for hosts which do not support multipart requests.
+	Http& set_del_body(const std::string& body);
+
 	// Callback called on HTTP request complete
 	Http& on_complete(CompleteFn fn);
 	// Callback called on an error occuring at any stage of the requests: Url parsing, DNS lookup,
@@ -118,6 +143,8 @@ public:
 	// Callback called after succesful HTTP request (after on_complete callback)
 	// Called if curl_easy_getinfo resolved just used IP address.
 	Http& on_ip_resolve(IPResolveFn fn);
+	// Callback called when response header is received
+	Http& on_header_callback(HeaderCallbackFn fn);
 
 	// Starts performing the request in a background thread
 	Ptr perform();
@@ -135,6 +162,9 @@ public:
 
 	// converts the given string to an url_encoded_string
 	static std::string url_encode(const std::string &str);
+	static std::string url_decode(const std::string &str);
+
+	static std::string get_filename_from_url(const std::string &url);
 private:
 	Http(const std::string &url);
 

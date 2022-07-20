@@ -91,6 +91,8 @@ namespace GUI {
 
         bool load_from_file(const std::string& filename, bool use_mipmaps, ECompressionType compression_type, bool apply_anisotropy);
         bool load_from_svg_file(const std::string& filename, bool use_mipmaps, bool compress, bool apply_anisotropy, unsigned int max_size_px);
+        //BBS load GLTexture from raw pixel data
+        bool load_from_raw_data(std::vector<unsigned char> data, unsigned int w, unsigned int h, bool apply_anisotropy = false);
         // meanings of states: (std::pair<int, bool>)
         // first field (int):
         // 0 -> no changes
@@ -101,6 +103,10 @@ namespace GUI {
         // true -> add background color
         bool load_from_svg_files_as_sprites_array(const std::vector<std::string>& filenames, const std::vector<std::pair<int, bool>>& states, unsigned int sprite_size_px, bool compress);
         void reset();
+        //BBS: add generate logic for text strings
+        int m_original_width;
+        int m_original_height;
+        bool generate_from_text_string(const std::string &text_str,             wxFont &font, wxColor background = *wxBLACK, wxColor foreground = *wxWHITE);
 
         unsigned int get_id() const { return m_id; }
         int get_width() const { return m_width; }

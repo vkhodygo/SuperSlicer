@@ -21,6 +21,7 @@ enum FlowRole {
     frTopSolidInfill,
     frSupportMaterial,
     frSupportMaterialInterface,
+    frSupportTransition,  // BBS
 };
 
 class FlowError : public Slic3r::InvalidArgument
@@ -96,7 +97,7 @@ public:
 
     static Flow bridging_flow(float dmr, float nozzle_diameter) { return Flow { dmr, dmr, bridge_extrusion_spacing(dmr), nozzle_diameter, true }; }
 
-    static Flow new_from_config_width(FlowRole role, const ConfigOptionFloatOrPercent &width, float nozzle_diameter, float height);
+    static Flow new_from_config_width(FlowRole role, const ConfigOptionFloat &width, float nozzle_diameter, float height);
 
     // Spacing of extrusions with rounded extrusion model.
     static float rounded_rectangle_extrusion_spacing(float width, float height);
@@ -130,7 +131,8 @@ private:
     bool        m_bridge { false };
 };
 
-extern Flow support_material_flow(const PrintObject *object, float layer_height = 0.f);
+extern Flow support_material_flow(const PrintObject* object, float layer_height = 0.f);
+extern Flow support_transition_flow(const PrintObject *object); //BBS
 extern Flow support_material_1st_layer_flow(const PrintObject *object, float layer_height = 0.f);
 extern Flow support_material_interface_flow(const PrintObject *object, float layer_height = 0.f);
 

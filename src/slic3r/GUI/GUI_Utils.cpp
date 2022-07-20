@@ -1,3 +1,4 @@
+#include "GUI.hpp"
 #include "GUI_Utils.hpp"
 #include "GUI_App.hpp"
 
@@ -29,6 +30,89 @@ wxDEFINE_EVENT(EVT_HID_DEVICE_DETACHED, HIDDeviceDetachedEvent);
 wxDEFINE_EVENT(EVT_VOLUME_ATTACHED, VolumeAttachedEvent);
 wxDEFINE_EVENT(EVT_VOLUME_DETACHED, VolumeDetachedEvent);
 #endif // _WIN32
+
+CopyFileResult copy_file_gui(const std::string &from, const std::string &to, std::string& error_message, const bool with_check)
+{
+#ifdef WIN32
+    //still has exceptions
+    /*wxString src = from_u8(from);
+    wxString dest = from_u8(to);
+
+    bool result = CopyFile(src.wc_str(), dest.wc_str(), false);
+    if (!result) {
+        DWORD errCode = GetLastError();
+        error_message = "Error: " + errCode;
+        return FAIL_COPY_FILE;
+    }
+    return SUCCESS;*/
+
+    wxString src = from_u8(from);
+    wxString dest = from_u8(to);
+    BOOL result;
+    char* buff = nullptr;
+    HANDLE handlesrc = nullptr;
+    HANDLE handledst = nullptr;
+    CopyFileResult ret = SUCCESS;
+
+    handlesrc = CreateFile(src.wc_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_TEMPORARY,
+        0);
+    if(handlesrc==INVALID_HANDLE_VALUE){
+        error_message = "Error: open src file";
+        ret = FAIL_COPY_FILE;
+        goto __finished;
+    }
+
+    handledst=CreateFile(dest.wc_str(),
+        GENERIC_WRITE,
+        FILE_SHARE_READ,
+        NULL,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_TEMPORARY,
+        0);
+    if(handledst==INVALID_HANDLE_VALUE){
+        error_message = "Error: create dest file";
+        ret = FAIL_COPY_FILE;
+        goto __finished;
+    }
+
+    DWORD size=GetFileSize(handlesrc,NULL);
+    buff = new char[size+1];
+    DWORD dwRead=0,dwWrite;
+    result = ReadFile(handlesrc, buff, size, &dwRead, NULL);
+    if (!result) {
+        DWORD errCode = GetLastError();
+        error_message = "Error: " + errCode;
+        ret = FAIL_COPY_FILE;
+        goto __finished;
+    }
+    buff[size]=0;
+    result = WriteFile(handledst,buff,size,&dwWrite,NULL);
+    if (!result) {
+        DWORD errCode = GetLastError();
+        error_message = "Error: " + errCode;
+        ret = FAIL_COPY_FILE;
+        goto __finished;
+    }
+
+__finished:
+    if (handlesrc)
+        CloseHandle(handlesrc);
+    if (handledst)
+        CloseHandle(handledst);
+    if (buff)
+        delete[] buff;
+
+    return ret;
+#else
+    return copy_file(from, to, error_message, with_check);
+#endif
+}
+
 
 wxTopLevelWindow* find_toplevel_parent(wxWindow *window)
 {
@@ -172,9 +256,13 @@ bool check_dark_mode() {
 
 
 #ifdef _WIN32
-void update_dark_ui(wxWindow* window) 
+void update_dark_ui(wxWindow* window)
 {
+#ifdef SUPPORT_DARK_MODE
     bool is_dark = wxGetApp().app_config->get("dark_color_mode") == "1";// ? true : check_dark_mode();// #ysDarkMSW - Allow it when we deside to support the sustem colors for application
+#else
+    bool is_dark = false;
+#endif
     window->SetBackgroundColour(is_dark ? wxColour(43,  43,  43)  : wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOW));
     window->SetForegroundColour(is_dark ? wxColour(250, 250, 250) : wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT));
 }
@@ -281,6 +369,12 @@ void WindowMetrics::sanitize_for_display(const wxRect &screen_rect)
     rect.y = std::min(rect.y, screen_rect.y + 4*screen_rect.height/5);
 }
 
+void WindowMetrics::center_for_display(const wxRect &screen_rect)
+{
+    rect.x = std::max(0, (screen_rect.GetWidth() - rect.GetWidth()) / 2);
+    rect.y = std::max(0, (screen_rect.GetHeight() - rect.GetHeight()) / 2);
+}
+
 std::string WindowMetrics::serialize() const
 {
     return (boost::format("%1%; %2%; %3%; %4%; %5%")
@@ -318,6 +412,62 @@ TaskTimer::~TaskTimer()
 #endif
 }
 
+/* Image Generator */
+bool load_image(const std::string &filename, wxImage &image)
+{
+    bool    result = true;
+    if (boost::algorithm::iends_with(filename, ".png")) {
+        result = image.LoadFile(wxString::FromUTF8(filename.c_str()), wxBITMAP_TYPE_PNG);
+    } else if (boost::algorithm::iends_with(filename, ".bmp")) {
+        result = image.LoadFile(wxString::FromUTF8(filename.c_str()), wxBITMAP_TYPE_BMP);
+    } else if (boost::algorithm::iends_with(filename, ".jpg")) {
+        result = image.LoadFile(wxString::FromUTF8(filename.c_str()), wxBITMAP_TYPE_JPEG);
+    } else {
+        return false;
+    }
+    return result;
+}
+
+bool generate_image(const std::string &filename, wxImage &image, wxSize img_size, int method)
+{
+    wxInitAllImageHandlers();
+
+    bool    result = true;
+    wxImage img;
+    result = load_image(filename, img);
+    if (!result) return result;
+
+    image = wxImage(img_size);
+    image.SetType(wxBITMAP_TYPE_PNG);
+    if (!image.HasAlpha()) {
+        image.InitAlpha();
+    }
+
+    //image.Clear(0);
+    //unsigned char *alpha = image.GetAlpha();
+    unsigned char* alpha = new unsigned char[image.GetWidth() *  image.GetHeight()];
+    if (alpha) { ::memset(alpha, wxIMAGE_ALPHA_TRANSPARENT, image.GetWidth() * image.GetHeight()); }
+    if (method == GERNERATE_IMAGE_RESIZE) {
+        float h_factor   = img.GetHeight() / (float) image.GetHeight();
+        float w_factor   = img.GetWidth() / (float) image.GetWidth();
+        float factor     = std::max(h_factor, w_factor);
+        int   tar_height = (int) ((float) img.GetHeight() / factor);
+        int   tar_width  = (int) ((float) img.GetWidth() / factor);
+        img              = img.Rescale(tar_width, tar_height);
+        image.Paste(img, (image.GetWidth() - tar_width) / 2, (image.GetHeight() - tar_height) / 2);
+    } else if (method == GERNERATE_IMAGE_CROP_VERTICAL) {
+        float w_factor   = img.GetWidth() / (float) image.GetWidth();
+        int   tar_height = (int) ((float) img.GetHeight() / w_factor);
+        int   tar_width  = (int) ((float) img.GetWidth() / w_factor);
+        img              = img.Rescale(tar_width, tar_height);
+        image.Paste(img, (image.GetWidth() - tar_width) / 2, (image.GetHeight() - tar_height) / 2);
+    } else {
+        return false;
+    }
+
+    image.ConvertAlphaToMask(image.GetMaskRed(), image.GetMaskGreen(), image.GetMaskBlue());
+    return true;
+}
 
 }
 }

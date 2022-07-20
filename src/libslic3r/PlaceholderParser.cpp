@@ -65,6 +65,11 @@
 
 namespace Slic3r {
 
+//! macro used to mark string used at localization,
+//! return same string
+#define L(s) (s)
+#define _(s) Slic3r::I18N::translate(s)
+
 PlaceholderParser::PlaceholderParser(const DynamicConfig *external_config) : m_external_config(external_config)
 {
     this->set("version", std::string(SLIC3R_VERSION));
@@ -205,7 +210,13 @@ namespace client
         ~expr() { this->reset(); }
 
         expr &operator=(const expr &rhs) 
-        { 
+        {
+            //BBS: avoid memory leak when call operator= directly before call reset()
+            if (this->type == TYPE_STRING && this->data.s) {
+                delete this->data.s;
+                this->data.s = nullptr;
+            }
+
             this->type      = rhs.type;
             this->it_range  = rhs.it_range;
             if (rhs.type == TYPE_STRING) 
@@ -225,9 +236,12 @@ namespace client
         }
 
         void                reset()   
-        { 
-            if (this->type == TYPE_STRING) 
-                delete data.s;
+        {
+            //BBS
+            if (this->type == TYPE_STRING && this->data.s) {
+                delete this->data.s;
+                this->data.s = nullptr;
+            }
             this->type = TYPE_EMPTY;
         }
 
@@ -806,7 +820,7 @@ namespace client
             case coFloatOrPercent:
             {
                 std::string opt_key(opt.it_range.begin(), opt.it_range.end());
-                if (boost::ends_with(opt_key, "extrusion_width")) {
+                if (boost::ends_with(opt_key, "line_width")) {
                 	// Extrusion width supports defaults and a complex graph of dependencies.
                     output.set_d(Flow::extrusion_width(opt_key, *ctx, static_cast<unsigned int>(ctx->current_extruder_id)));
                 } else if (! static_cast<const ConfigOptionFloatOrPercent*>(opt.opt)->percent) {
@@ -821,7 +835,7 @@ namespace client
 			        	const ConfigOption *opt_parent = opt_def->ratio_over.empty() ? nullptr : ctx->resolve_symbol(opt_def->ratio_over);
 			        	if (opt_parent == nullptr)
 			                ctx->throw_exception("FloatOrPercent variable failed to resolve the \"ratio_over\" dependencies", opt.it_range);
-			            if (boost::ends_with(opt_def->ratio_over, "extrusion_width")) {
+			            if (boost::ends_with(opt_def->ratio_over, "line_width")) {
                 			// Extrusion width supports defaults and a complex graph of dependencies.
                             assert(opt_parent->type() == coFloatOrPercent);
                     		v *= Flow::extrusion_width(opt_def->ratio_over, static_cast<const ConfigOptionFloatOrPercent*>(opt_parent), *ctx, static_cast<unsigned int>(ctx->current_extruder_id));
@@ -841,6 +855,8 @@ namespace client
 	            }
 		        break;
 		    }
+            //BBS: Add enum. Otherwise enum can not be judged in placeholder
+            case coEnum:    output.set_s(opt.opt->serialize());  break;
             default:
                 ctx->throw_exception("Unknown scalar variable type", opt.it_range);
             }
@@ -868,6 +884,8 @@ namespace client
             case coPercents: output.set_d(static_cast<const ConfigOptionPercents*>(opt.opt)->values[idx]); break;
             case coPoints:   output.set_s(to_string(static_cast<const ConfigOptionPoints  *>(opt.opt)->values[idx])); break;
             case coBools:    output.set_b(static_cast<const ConfigOptionBools   *>(opt.opt)->values[idx] != 0); break;
+            // BBS
+            case coEnums:    output.set_i(static_cast<const ConfigOptionInts    *>(opt.opt)->values[idx]); break;
             default:
                 ctx->throw_exception("Unknown vector variable type", opt.it_range);
             }
@@ -922,31 +940,31 @@ namespace client
             auto error_line = std::string(first, first_pos) + std::string(last, 0, last_pos);
             // Position of the it_error from the start of its line.
             auto error_pos  = (it_error - it_begin) - first_pos;
-            msg += "Parsing error at line " + std::to_string(line_nr);
-            if (! info.tag.empty() && info.tag.front() == '*') {
-                // The gat contains an explanatory string.
-                msg += ": ";
-                msg += info.tag.substr(1);
-            } else {
-                auto it = tag_to_error_message.find(info.tag);
-                if (it == tag_to_error_message.end()) {
-                    // A generic error report based on the nonterminal or terminal symbol name.
-                    msg += ". Expecting tag ";
-                    msg += info.tag;
-                } else {
-                    // Use the human readable error message.
-                    msg += ". ";
-                    msg += it->second;
-                }
-            }
-            msg += '\n';
+            msg += Slic3r::format(_(L("Error at line %1%:\n")), std::to_string(line_nr));
+            //if (! info.tag.empty() && info.tag.front() == '*') {
+            //    // The gat contains an explanatory string.
+            //    msg += ": ";
+            //    msg += info.tag.substr(1);
+            //} else {
+            //   auto it = tag_to_error_message.find(info.tag);
+            //    if (it == tag_to_error_message.end()) {
+            //        // A generic error report based on the nonterminal or terminal symbol name.
+            //        msg += ". Expecting tag ";
+            //        msg += info.tag;
+            //    } else {
+            //        // Use the human readable error message.
+            //        msg += ". ";
+            //        msg += it->second;
+            //    }
+            //}
+            //msg += '\n';
             // This hack removes all non-UTF8 characters from the source line, so that the upstream wxWidgets conversions
             // from UTF8 to UTF16 don't bail out.
             msg += boost::nowide::narrow(boost::nowide::widen(error_line));
             msg += '\n';
-            for (size_t i = 0; i < error_pos; ++ i)
-                msg += ' ';
-            msg += "^\n";
+            //for (size_t i = 0; i < error_pos; ++ i)
+            //    msg += ' ';
+            //msg += "^\n";
         }
     };
 

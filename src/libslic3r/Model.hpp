@@ -11,15 +11,21 @@
 #include "SLA/SupportPoint.hpp"
 #include "SLA/Hollowing.hpp"
 #include "TriangleMesh.hpp"
-#include "Arrange.hpp"
 #include "CustomGCode.hpp"
 #include "enum_bitmask.hpp"
+
+//BBS: add bbs 3mf
+#include "Format/bbs_3mf.hpp"
+//BBS: add step
+#include "Format/STEP.hpp"
 
 #include <map>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
+#include <algorithm>
+#include <functional>
 
 namespace cereal {
 	class BinaryInputArchive;
@@ -43,6 +49,11 @@ class ModelWipeTower;
 class Print;
 class SLAPrint;
 class TriangleSelector;
+//BBS: add Preset
+class Preset;
+class BBLProject;
+
+class KeyStore;
 
 namespace UndoRedo {
 	class StackImpl;
@@ -167,7 +178,7 @@ private:
 	friend class UndoRedo::StackImpl;
 	// Create an object for deserialization, don't allocate IDs for ModelMaterial and its config.
 	ModelMaterial() : ObjectBase(-1), config(-1), m_model(nullptr) { assert(this->id().invalid()); assert(this->config.id().invalid()); }
-	template<class Archive> void serialize(Archive &ar) { 
+	template<class Archive> void serialize(Archive &ar) {
 		assert(this->id().invalid()); assert(this->config.id().invalid());
 		Internal::StaticSerializationWrapper<ModelConfigObject> config_wrapper(config);
 		ar(attributes, config_wrapper);
@@ -227,9 +238,10 @@ enum class ModelVolumeType : int {
     PARAMETER_MODIFIER,
     SUPPORT_BLOCKER,
     SUPPORT_ENFORCER,
+    TIMELAPSE_WIPE_TOWER
 };
 
-enum class ModelObjectCutAttribute : int { KeepUpper, KeepLower, FlipLower }; 
+enum class ModelObjectCutAttribute : int { KeepUpper, KeepLower, FlipLower, CutToParts };
 using ModelObjectCutAttributes = enum_bitmask<ModelObjectCutAttribute>;
 ENABLE_ENUM_BITMASK_OPERATORS(ModelObjectCutAttribute);
 
@@ -241,6 +253,8 @@ class ModelObject final : public ObjectBase
 {
 public:
     std::string             name;
+    //BBS: add module name for assemble
+    std::string             module_name;
     std::string             input_file;    // XXX: consider fs::path
     // Instances of this ModelObject. Each instance defines a shift on the print bed, rotation around the Z axis and a uniform scaling.
     // Instances are owned by this ModelObject.
@@ -257,6 +271,7 @@ public:
     LayerHeightProfile      layer_height_profile;
     // Whether or not this object is printable
     bool                    printable;
+    bool                    is_timelapse_wipe_tower = false;
 
     // This vector holds position of selected support points for SLA. The data are
     // saved in mesh coordinates to allow using them for several instances.
@@ -275,8 +290,13 @@ public:
         when user expects that. */
     Vec3d                   origin_translation;
 
+    // BBS: save for compare with new load volumes
+    std::vector<ObjectID>   volume_ids;
+
     Model*                  get_model() { return m_model; }
     const Model*            get_model() const { return m_model; }
+    // BBS: production extension
+    int                     get_backup_id() const;
 
     ModelVolume*            add_volume(const TriangleMesh &mesh);
     ModelVolume*            add_volume(TriangleMesh &&mesh, ModelVolumeType type = ModelVolumeType::MODEL_PART);
@@ -323,6 +343,9 @@ public:
 	// A snug bounding box of non-transformed (non-rotated, non-scaled, non-translated) sum of all object volumes.
     BoundingBoxf3 full_raw_mesh_bounding_box() const;
 
+    //BBS: add instance convex hull bounding box
+    BoundingBoxf3 instance_convex_hull_bounding_box(size_t instance_idx, bool dont_translate = false) const;
+
     // Calculate 2D convex hull of of a projection of the transformed printable volumes into the XY plane.
     // This method is cheap in that it does not make any unnecessary copy of the volume meshes.
     // This method is used by the auto arrange function.
@@ -353,9 +376,13 @@ public:
     size_t materials_count() const;
     size_t facets_count() const;
     size_t parts_count() const;
-    ModelObjectPtrs cut(size_t instance, coordf_t z, ModelObjectCutAttributes attributes);
+    // BBS: replace z with plane_points
+    ModelObjectPtrs cut(size_t instance, std::array<Vec3d, 4> plane_points, ModelObjectCutAttributes attributes);
+    // BBS
+    ModelObjectPtrs segment(size_t instance, unsigned int max_extruders, double smoothing_alpha = 0.5, int segment_number = 5);
     void split(ModelObjectPtrs* new_objects);
     void merge();
+    ModelObjectPtrs merge_volumes(std::vector<int>& vol_indeces);//BBS
     // Support for non-uniform scaling of instances. If an instance is rotated by angles, which are not multiples of ninety degrees,
     // then the scaling in world coordinate system is not representable by the Geometry::Transformation structure.
     // This situation is solved by baking in the instance transformation into the mesh vertices.
@@ -382,14 +409,14 @@ private:
     // This constructor assigns new ID to this ModelObject and its config.
     explicit ModelObject(Model* model) : m_model(model), printable(true), origin_translation(Vec3d::Zero()),
         m_bounding_box_valid(false), m_raw_bounding_box_valid(false), m_raw_mesh_bounding_box_valid(false)
-    { 
+    {
         assert(this->id().valid());
         assert(this->config.id().valid());
         assert(this->layer_height_profile.id().valid());
     }
     explicit ModelObject(int) : ObjectBase(-1), config(-1), layer_height_profile(-1), m_model(nullptr), printable(true), origin_translation(Vec3d::Zero()), m_bounding_box_valid(false), m_raw_bounding_box_valid(false), m_raw_mesh_bounding_box_valid(false)
-    { 
-        assert(this->id().invalid()); 
+    {
+        assert(this->id().invalid());
         assert(this->config.id().invalid());
         assert(this->layer_height_profile.id().invalid());
     }
@@ -398,25 +425,25 @@ private:
 
     // To be able to return an object from own copy / clone methods. Hopefully the compiler will do the "Copy elision"
     // (Omits copy and move(since C++11) constructors, resulting in zero - copy pass - by - value semantics).
-    ModelObject(const ModelObject &rhs) : ObjectBase(-1), config(-1), layer_height_profile(-1), m_model(rhs.m_model) { 
-    	assert(this->id().invalid()); 
-        assert(this->config.id().invalid()); 
+    ModelObject(const ModelObject &rhs) : ObjectBase(-1), config(-1), layer_height_profile(-1), m_model(rhs.m_model) {
+    	assert(this->id().invalid());
+        assert(this->config.id().invalid());
         assert(this->layer_height_profile.id().invalid());
         assert(rhs.id() != rhs.config.id());
         assert(rhs.id() != rhs.layer_height_profile.id());
     	this->assign_copy(rhs);
-    	assert(this->id().valid()); 
-        assert(this->config.id().valid()); 
-        assert(this->layer_height_profile.id().valid()); 
+    	assert(this->id().valid());
+        assert(this->config.id().valid());
+        assert(this->layer_height_profile.id().valid());
         assert(this->id() != this->config.id());
         assert(this->id() != this->layer_height_profile.id());
-    	assert(this->id() == rhs.id()); 
+    	assert(this->id() == rhs.id());
         assert(this->config.id() == rhs.config.id());
         assert(this->layer_height_profile.id() == rhs.layer_height_profile.id());
     }
-    explicit ModelObject(ModelObject &&rhs) : ObjectBase(-1), config(-1), layer_height_profile(-1) { 
-    	assert(this->id().invalid()); 
-        assert(this->config.id().invalid()); 
+    explicit ModelObject(ModelObject &&rhs) : ObjectBase(-1), config(-1), layer_height_profile(-1) {
+    	assert(this->id().invalid());
+        assert(this->config.id().invalid());
         assert(this->layer_height_profile.id().invalid());
         assert(rhs.id() != rhs.config.id());
         assert(rhs.id() != rhs.layer_height_profile.id());
@@ -431,22 +458,9 @@ private:
         assert(this->layer_height_profile.id() == rhs.layer_height_profile.id());
     }
     ModelObject& operator=(const ModelObject &rhs) {
-    	this->assign_copy(rhs); 
+    	this->assign_copy(rhs);
     	m_model = rhs.m_model;
-    	assert(this->id().valid()); 
-        assert(this->config.id().valid()); 
-        assert(this->layer_height_profile.id().valid());
-        assert(this->id() != this->config.id());
-        assert(this->id() != this->layer_height_profile.id());
-    	assert(this->id() == rhs.id()); 
-        assert(this->config.id() == rhs.config.id());
-        assert(this->layer_height_profile.id() == rhs.layer_height_profile.id());
-    	return *this;
-    }
-    ModelObject& operator=(ModelObject &&rhs) {
-    	this->assign_copy(std::move(rhs)); 
-    	m_model = rhs.m_model;
-    	assert(this->id().valid()); 
+    	assert(this->id().valid());
         assert(this->config.id().valid());
         assert(this->layer_height_profile.id().valid());
         assert(this->id() != this->config.id());
@@ -456,8 +470,21 @@ private:
         assert(this->layer_height_profile.id() == rhs.layer_height_profile.id());
     	return *this;
     }
-	void set_new_unique_id() { 
-        ObjectBase::set_new_unique_id(); 
+    ModelObject& operator=(ModelObject &&rhs) {
+    	this->assign_copy(std::move(rhs));
+    	m_model = rhs.m_model;
+    	assert(this->id().valid());
+        assert(this->config.id().valid());
+        assert(this->layer_height_profile.id().valid());
+        assert(this->id() != this->config.id());
+        assert(this->id() != this->layer_height_profile.id());
+    	assert(this->id() == rhs.id());
+        assert(this->config.id() == rhs.config.id());
+        assert(this->layer_height_profile.id() == rhs.layer_height_profile.id());
+    	return *this;
+    }
+	void set_new_unique_id() {
+        ObjectBase::set_new_unique_id();
         this->config.set_new_unique_id();
         this->layer_height_profile.set_new_unique_id();
     }
@@ -484,21 +511,36 @@ private:
 	friend class cereal::access;
 	friend class UndoRedo::StackImpl;
 	// Used for deserialization -> Don't allocate any IDs for the ModelObject or its config.
-	ModelObject() : 
+	ModelObject() :
         ObjectBase(-1), config(-1), layer_height_profile(-1),
         m_model(nullptr), m_bounding_box_valid(false), m_raw_bounding_box_valid(false), m_raw_mesh_bounding_box_valid(false) {
-		assert(this->id().invalid()); 
+		assert(this->id().invalid());
         assert(this->config.id().invalid());
         assert(this->layer_height_profile.id().invalid());
 	}
-	template<class Archive> void serialize(Archive &ar) {
-		ar(cereal::base_class<ObjectBase>(this));
-		Internal::StaticSerializationWrapper<ModelConfigObject> config_wrapper(config);
-        Internal::StaticSerializationWrapper<LayerHeightProfile> layer_heigth_profile_wrapper(layer_height_profile);
-        ar(name, input_file, instances, volumes, config_wrapper, layer_config_ranges, layer_heigth_profile_wrapper, 
+    template<class Archive> void save(Archive& ar) const {
+        ar(cereal::base_class<ObjectBase>(this));
+        Internal::StaticSerializationWrapper<ModelConfigObject const> config_wrapper(config);
+        Internal::StaticSerializationWrapper<LayerHeightProfile const> layer_heigth_profile_wrapper(layer_height_profile);
+        ar(name, module_name, input_file, instances, volumes, config_wrapper, layer_config_ranges, layer_heigth_profile_wrapper,
             sla_support_points, sla_points_status, sla_drain_holes, printable, origin_translation,
             m_bounding_box, m_bounding_box_valid, m_raw_bounding_box, m_raw_bounding_box_valid, m_raw_mesh_bounding_box, m_raw_mesh_bounding_box_valid);
-	}
+    }
+    template<class Archive> void load(Archive& ar) {
+        ar(cereal::base_class<ObjectBase>(this));
+        Internal::StaticSerializationWrapper<ModelConfigObject> config_wrapper(config);
+        Internal::StaticSerializationWrapper<LayerHeightProfile> layer_heigth_profile_wrapper(layer_height_profile);
+        // BBS: add backup, check modify
+        SaveObjectGaurd gaurd(*this);
+        ar(name, module_name, input_file, instances, volumes, config_wrapper, layer_config_ranges, layer_heigth_profile_wrapper,
+            sla_support_points, sla_points_status, sla_drain_holes, printable, origin_translation,
+            m_bounding_box, m_bounding_box_valid, m_raw_bounding_box, m_raw_bounding_box_valid, m_raw_mesh_bounding_box, m_raw_mesh_bounding_box_valid);
+        std::vector<ObjectID> volume_ids2;
+        std::transform(volumes.begin(), volumes.end(), std::back_inserter(volume_ids2), std::mem_fn(&ObjectBase::id));
+        if (volume_ids != volume_ids2)
+            Slic3r::save_object_mesh(*this);
+        volume_ids.clear();
+    }
 
     // Called by Print::validate() from the UI thread.
     unsigned int update_instances_print_volume_state(const BuildVolume &build_volume);
@@ -525,6 +567,7 @@ enum class EnforcerBlockerType : int8_t {
     Extruder13,
     Extruder14,
     Extruder15,
+    ExtruderMax = Extruder15,
 };
 
 enum class ConversionType : int {
@@ -542,6 +585,9 @@ public:
     const std::pair<std::vector<std::pair<int, int>>, std::vector<bool>>& get_data() const throw() { return m_data; }
     bool set(const TriangleSelector& selector);
     indexed_triangle_set get_facets(const ModelVolume& mv, EnforcerBlockerType type) const;
+    // BBS
+    void get_facets(const ModelVolume& mv, std::vector<indexed_triangle_set>& facets_per_type) const;
+    void set_enforcer_block_type_limit(const ModelVolume& mv, EnforcerBlockerType max_type);
     indexed_triangle_set get_facets_strict(const ModelVolume& mv, EnforcerBlockerType type) const;
     bool has_facets(const ModelVolume& mv, EnforcerBlockerType type) const;
     bool empty() const { return m_data.first.empty(); }
@@ -608,7 +654,7 @@ public:
         bool is_converted_from_meters{ false };
         bool is_from_builtin_objects{ false };
 
-        template<class Archive> void serialize(Archive& ar) { 
+        template<class Archive> void serialize(Archive& ar) {
             //FIXME Vojtech: Serialize / deserialize only if the Source is set.
             // likely testing input_file or object_idx would be sufficient.
             ar(input_file, object_idx, volume_idx, mesh_offset, transform, is_converted_from_inches, is_converted_from_meters, is_from_builtin_objects);
@@ -625,7 +671,7 @@ public:
     void                set_mesh(std::shared_ptr<const TriangleMesh> &mesh) { m_mesh = mesh; }
     void                set_mesh(std::unique_ptr<const TriangleMesh> &&mesh) { m_mesh = std::move(mesh); }
 	void				reset_mesh() { m_mesh = std::make_shared<const TriangleMesh>(); }
-    // Configuration parameters specific to an object model geometry or a modifier volume, 
+    // Configuration parameters specific to an object model geometry or a modifier volume,
     // overriding the global Slic3r settings and the ModelObject settings.
     ModelConfigObject	config;
 
@@ -637,6 +683,13 @@ public:
 
     // List of mesh facets painted for MMU segmentation.
     FacetsAnnotation    mmu_segmentation_facets;
+
+    // BBS: quick access for volume extruders, 1 based
+    mutable std::vector<int> mmuseg_extruders;
+    mutable Timestamp        mmuseg_ts;
+
+    // List of exterior faces
+    FacetsAnnotation    exterior_facets;
 
     // A parent object owning this modifier volume.
     ModelObject*        get_object() const { return this->object; }
@@ -657,6 +710,10 @@ public:
     int                 extruder_id() const;
 
     bool                is_splittable() const;
+
+    // BBS
+    std::vector<int>    get_extruders() const;
+    void                update_extruder_count(size_t extruder_count);
 
     // Split this volume, append the result to the object owning this volume.
     // Return the number of volumes created from this one.
@@ -682,6 +739,9 @@ public:
     void                calculate_convex_hull();
     const TriangleMesh& get_convex_hull() const;
     const std::shared_ptr<const TriangleMesh>& get_convex_hull_shared_ptr() const { return m_convex_hull; }
+    //BBS: add convex_hell_2d related logic
+    const Polygon& get_convex_hull_2d(const Transform3d &trafo_instance) const;
+
     // Get count of errors in the mesh
     int                 get_repaired_errors_count() const;
 
@@ -722,7 +782,7 @@ public:
 
     const Transform3d& get_matrix(bool dont_translate = false, bool dont_rotate = false, bool dont_scale = false, bool dont_mirror = false) const { return m_transformation.get_matrix(dont_translate, dont_rotate, dont_scale, dont_mirror); }
 
-	void set_new_unique_id() { 
+	void set_new_unique_id() {
         ObjectBase::set_new_unique_id();
         this->config.set_new_unique_id();
         this->supported_facets.set_new_unique_id();
@@ -758,7 +818,14 @@ private:
     t_model_material_id             	m_material_id;
     // The convex hull of this model's mesh.
     std::shared_ptr<const TriangleMesh> m_convex_hull;
+    //BBS: add convex hull 2d related logic
+    mutable Polygon                     m_convex_hull_2d; //BBS, used for convex_hell_2d acceleration
+    mutable Transform3d                 m_cached_trans_matrix; //BBS, used for convex_hell_2d acceleration
+    mutable Polygon                     m_cached_2d_polygon;   //BBS, used for convex_hell_2d acceleration
     Geometry::Transformation        	m_transformation;
+
+    //BBS: add convex_hell_2d related logic
+    void  calculate_convex_hull_2d(const Geometry::Transformation &transformation) const;
 
     // flag to optimize the checking if the volume is splittable
     //     -1   ->   is unknown value (before first cheking)
@@ -768,9 +835,9 @@ private:
 
 	ModelVolume(ModelObject *object, const TriangleMesh &mesh, ModelVolumeType type = ModelVolumeType::MODEL_PART) : m_mesh(new TriangleMesh(mesh)), m_type(type), object(object)
     {
-		assert(this->id().valid()); 
-        assert(this->config.id().valid()); 
-        assert(this->supported_facets.id().valid()); 
+		assert(this->id().valid());
+        assert(this->config.id().valid());
+        assert(this->supported_facets.id().valid());
         assert(this->seam_facets.id().valid());
         assert(this->mmu_segmentation_facets.id().valid());
         assert(this->id() != this->config.id());
@@ -782,7 +849,7 @@ private:
     }
     ModelVolume(ModelObject *object, TriangleMesh &&mesh, TriangleMesh &&convex_hull, ModelVolumeType type = ModelVolumeType::MODEL_PART) :
 		m_mesh(new TriangleMesh(std::move(mesh))), m_convex_hull(new TriangleMesh(std::move(convex_hull))), m_type(type), object(object) {
-		assert(this->id().valid()); 
+		assert(this->id().valid());
         assert(this->config.id().valid());
         assert(this->supported_facets.id().valid());
         assert(this->seam_facets.id().valid());
@@ -800,8 +867,8 @@ private:
         config(other.config), m_type(other.m_type), object(object), m_transformation(other.m_transformation),
         supported_facets(other.supported_facets), seam_facets(other.seam_facets), mmu_segmentation_facets(other.mmu_segmentation_facets)
     {
-		assert(this->id().valid()); 
-        assert(this->config.id().valid()); 
+		assert(this->id().valid());
+        assert(this->config.id().valid());
         assert(this->supported_facets.id().valid());
         assert(this->seam_facets.id().valid());
         assert(this->mmu_segmentation_facets.id().valid());
@@ -820,8 +887,8 @@ private:
     ModelVolume(ModelObject *object, const ModelVolume &other, const TriangleMesh &&mesh) :
         name(other.name), source(other.source), m_mesh(new TriangleMesh(std::move(mesh))), config(other.config), m_type(other.m_type), object(object), m_transformation(other.m_transformation)
     {
-		assert(this->id().valid()); 
-        assert(this->config.id().valid()); 
+		assert(this->id().valid());
+        assert(this->config.id().valid());
         assert(this->supported_facets.id().valid());
         assert(this->seam_facets.id().valid());
         assert(this->mmu_segmentation_facets.id().valid());
@@ -835,8 +902,8 @@ private:
         this->config.set_new_unique_id();
         if (mesh.facets_count() > 1)
             calculate_convex_hull();
-		assert(this->config.id().valid()); 
-        assert(this->config.id() != other.config.id()); 
+		assert(this->config.id().valid());
+        assert(this->config.id() != other.config.id());
         assert(this->supported_facets.id() != other.supported_facets.id());
         assert(this->seam_facets.id() != other.seam_facets.id());
         assert(this->mmu_segmentation_facets.id() != other.mmu_segmentation_facets.id());
@@ -860,10 +927,21 @@ private:
 	}
 	template<class Archive> void load(Archive &ar) {
 		bool has_convex_hull;
+        // BBS: add backup, check modify
+        bool mesh_changed = false;
+        auto tr = m_transformation;
         ar(name, source, m_mesh, m_type, m_material_id, m_transformation, m_is_splittable, has_convex_hull);
+        mesh_changed |= !(tr == m_transformation);
+        if (mesh_changed) m_transformation.get_matrix(true, true, true, true); // force dirty
+        auto t = supported_facets.timestamp();
         cereal::load_by_value(ar, supported_facets);
+        mesh_changed |= t != supported_facets.timestamp();
+        t = seam_facets.timestamp();
         cereal::load_by_value(ar, seam_facets);
+        mesh_changed |= t != seam_facets.timestamp();
+        t = mmu_segmentation_facets.timestamp();
         cereal::load_by_value(ar, mmu_segmentation_facets);
+        mesh_changed |= t != mmu_segmentation_facets.timestamp();
         cereal::load_by_value(ar, config);
 		assert(m_mesh);
 		if (has_convex_hull) {
@@ -873,6 +951,8 @@ private:
 				this->calculate_convex_hull();
 		} else
 			m_convex_hull.reset();
+        if (mesh_changed && object)
+            Slic3r::save_object_mesh(*object);
 	}
 	template<class Archive> void save(Archive &ar) const {
 		bool has_convex_hull = m_convex_hull.get() != nullptr;
@@ -911,21 +991,43 @@ class ModelInstance final : public ObjectBase
 {
 private:
     Geometry::Transformation m_transformation;
+    Geometry::Transformation m_assemble_transformation;
+    Vec3d m_offset_to_assembly{ 0.0, 0.0, 0.0 };
+    bool m_assemble_initialized;
 
 public:
     // flag showing the position of this instance with respect to the print volume (set by Print::validate() using ModelObject::check_instances_print_volume_state())
     ModelInstanceEPrintVolumeState print_volume_state;
     // Whether or not this instance is printable
     bool printable;
+    int arrange_order = 0; // BBS
 
     ModelObject* get_object() const { return this->object; }
 
     const Geometry::Transformation& get_transformation() const { return m_transformation; }
     void set_transformation(const Geometry::Transformation& transformation) { m_transformation = transformation; }
 
+    const Geometry::Transformation& get_assemble_transformation() const { return m_assemble_transformation; }
+    void set_assemble_transformation(const Geometry::Transformation& transformation) {
+        m_assemble_initialized = true;
+        m_assemble_transformation = transformation;
+    }
+    void set_assemble_from_transform(Transform3d& transform) {
+        m_assemble_initialized = true;
+        m_assemble_transformation.set_from_transform(transform);
+    }
+    void set_assemble_offset(const Vec3d& offset) { m_assemble_transformation.set_offset(offset); }
+    void rotate_assemble(double angle, const Vec3d& axis) {
+        m_assemble_transformation.set_rotation(m_assemble_transformation.get_rotation() + Geometry::extract_euler_angles(Eigen::Quaterniond(Eigen::AngleAxisd(angle, axis)).toRotationMatrix()));
+    }
+
+    // BBS
+    void set_offset_to_assembly(const Vec3d& offset) { m_offset_to_assembly = offset; }
+    Vec3d get_offset_to_assembly() { return m_offset_to_assembly; }
+
     const Vec3d& get_offset() const { return m_transformation.get_offset(); }
     double get_offset(Axis axis) const { return m_transformation.get_offset(axis); }
-    
+
     void set_offset(const Vec3d& offset) { m_transformation.set_offset(offset); }
     void set_offset(Axis axis, double offset) { m_transformation.set_offset(axis, offset); }
 
@@ -934,6 +1036,15 @@ public:
 
     void set_rotation(const Vec3d& rotation) { m_transformation.set_rotation(rotation); }
     void set_rotation(Axis axis, double rotation) { m_transformation.set_rotation(axis, rotation); }
+
+    // BBS
+    void rotate(Matrix3d rotation_matrix) {
+        // note: must remove scaling from transformation, otherwise auto-orientation with scaled objects will have problem
+        auto R = get_matrix(true,false,true).matrix().block<3, 3>(0, 0);
+        auto R_new = rotation_matrix * R;
+        auto euler_angles = Geometry::extract_euler_angles(R_new);
+        set_rotation(euler_angles);
+    }
 
     const Vec3d& get_scaling_factor() const { return m_transformation.get_scaling_factor(); }
     double get_scaling_factor(Axis axis) const { return m_transformation.get_scaling_factor(axis); }
@@ -944,7 +1055,7 @@ public:
     const Vec3d& get_mirror() const { return m_transformation.get_mirror(); }
     double get_mirror(Axis axis) const { return m_transformation.get_mirror(axis); }
 	bool is_left_handed() const { return m_transformation.is_left_handed(); }
-    
+
     void set_mirror(const Vec3d& mirror) { m_transformation.set_mirror(mirror); }
     void set_mirror(Axis axis, double mirror) { m_transformation.set_mirror(axis, mirror); }
 
@@ -962,10 +1073,18 @@ public:
     const Transform3d& get_matrix(bool dont_translate = false, bool dont_rotate = false, bool dont_scale = false, bool dont_mirror = false) const { return m_transformation.get_matrix(dont_translate, dont_rotate, dont_scale, dont_mirror); }
 
     bool is_printable() const { return object->printable && printable && (print_volume_state == ModelInstancePVS_Inside); }
+    bool is_assemble_initialized() { return m_assemble_initialized; }
+
+    //BBS
+    double get_auto_brim_width(double deltaT, double adhension) const;
+    // BBS
+    Polygon convex_hull_2d();
+    void invalidate_convex_hull_2d();
 
     // Getting the input polygon for arrange
-    arrangement::ArrangePolygon get_arrange_polygon() const;
-    
+    // We use void* as input type to avoid including Arrange.hpp in Model.hpp.
+    void get_arrange_polygon(void* arrange_polygon) const;
+
     // Apply the arrange result on the ModelInstance
     void apply_arrange_result(const Vec2d& offs, double rotation)
     {
@@ -988,12 +1107,19 @@ protected:
 private:
     // Parent object, owning this instance.
     ModelObject* object;
+    Polygon convex_hull; // BBS
 
     // Constructor, which assigns a new unique ID.
-    explicit ModelInstance(ModelObject* object) : print_volume_state(ModelInstancePVS_Inside), printable(true), object(object) { assert(this->id().valid()); }
+    explicit ModelInstance(ModelObject* object) : print_volume_state(ModelInstancePVS_Inside), printable(true), object(object), m_assemble_initialized(false) { assert(this->id().valid()); }
     // Constructor, which assigns a new unique ID.
     explicit ModelInstance(ModelObject *object, const ModelInstance &other) :
-        m_transformation(other.m_transformation), print_volume_state(ModelInstancePVS_Inside), printable(other.printable), object(object) { assert(this->id().valid() && this->id() != other.id()); }
+        m_transformation(other.m_transformation)
+        , m_assemble_transformation(other.m_assemble_transformation)
+        , m_offset_to_assembly(other.m_offset_to_assembly)
+        , print_volume_state(ModelInstancePVS_Inside)
+        , printable(other.printable)
+        , object(object)
+        , m_assemble_initialized(false) { assert(this->id().valid() && this->id() != other.id()); }
 
     explicit ModelInstance(ModelInstance &&rhs) = delete;
     ModelInstance& operator=(const ModelInstance &rhs) = delete;
@@ -1003,8 +1129,9 @@ private:
 	friend class UndoRedo::StackImpl;
 	// Used for deserialization, therefore no IDs are allocated.
 	ModelInstance() : ObjectBase(-1), object(nullptr) { assert(this->id().invalid()); }
-	template<class Archive> void serialize(Archive &ar) {
-        ar(m_transformation, print_volume_state, printable);
+    // BBS. Add added members to archive.
+    template<class Archive> void serialize(Archive& ar) {
+        ar(m_transformation, print_volume_state, printable, m_assemble_transformation, m_offset_to_assembly, m_assemble_initialized);
     }
 };
 
@@ -1012,8 +1139,9 @@ private:
 class ModelWipeTower final : public ObjectBase
 {
 public:
-	Vec2d		position;
-	double 		rotation;
+    // BBS: add partplate logic
+	std::vector<Vec2d>      positions;
+	double 	                rotation;
 
 private:
 	friend class cereal::access;
@@ -1035,7 +1163,55 @@ private:
     ModelWipeTower& operator=(ModelWipeTower &&rhs) = delete;
 
     // For serialization / deserialization of ModelWipeTower composed into another class into the Undo / Redo stack as a separate object.
-    template<typename Archive> void serialize(Archive &ar) { ar(position, rotation); }
+    template<typename Archive> void serialize(Archive &ar) { ar(positions, rotation); }
+};
+
+// BBS structure stores extruder parameters and speed map of all models
+struct ExtruderParams
+{
+    std::string materialName;
+    //std::array<double, BedType::btCount> bedTemp;
+    int bedTemp;
+    double heatEndTemp;
+};
+
+struct GlobalSpeedMap
+{
+    double perimeterSpeed;
+    double externalPerimeterSpeed;
+    double infillSpeed;
+    double solidInfillSpeed;
+    double topSolidInfillSpeed;
+    double supportSpeed;
+    double maxSpeed;
+};
+
+/* info in ModelDesignInfo can not changed after initialization */
+class ModelDesignInfo
+{
+public:
+    std::string DesignId;               // DisignId for Model
+    std::string Designer;               // Designer nickname in utf8
+    std::string DesignerUserId;         // Designer user_id string
+};
+
+/* info in ModelInfo can be changed after initialization */
+class ModelInfo
+{
+public:
+    std::string cover_file;     // utf8 format
+    std::string license;        // utf8 format
+    std::string description;    // utf8 format
+    std::string copyright;      // utf8 format
+    std::string model_name;     // utf8 format
+
+    void load(ModelInfo &info) {
+        this->cover_file    = info.cover_file;
+        this->license       = info.license;
+        this->description   = info.description;
+        this->copyright     = info.copyright;
+        this->model_name    = info.model_name;
+    }
 };
 
 // The print bed content.
@@ -1052,38 +1228,57 @@ public:
     // Objects are owned by a model. Each model may have multiple instances, each instance having its own transformation (shift, scale, rotation).
     ModelObjectPtrs     objects;
     // Wipe tower object.
-    ModelWipeTower	    wipe_tower;
+    ModelWipeTower	wipe_tower;
+    // BBS static members store extruder parameters and speed map of all models
+    static std::map<size_t, ExtruderParams> extruderParamsMap;
+    static GlobalSpeedMap printSpeedMap;
+
+    // DesignInfo of Model
+    std::shared_ptr<ModelDesignInfo> design_info = nullptr;
+    std::shared_ptr<ModelInfo> model_info = nullptr;
+
+    void SetDesigner(std::string designer, std::string designer_user_id) {
+        if (design_info == nullptr) {
+            design_info = std::make_shared<ModelDesignInfo>();
+        }
+        design_info->Designer = designer;
+        //BBS tips: clean design user id when set designer
+        design_info->DesignerUserId = designer_user_id;
+    }
 
     // Extensions for color print
     CustomGCode::Info custom_gcode_per_print_z;
-    
+
     // Default constructor assigns a new ID to the model.
     Model() { assert(this->id().valid()); }
-    ~Model() { this->clear_objects(); this->clear_materials(); }
+    ~Model();
 
     /* To be able to return an object from own copy / clone methods. Hopefully the compiler will do the "Copy elision" */
     /* (Omits copy and move(since C++11) constructors, resulting in zero - copy pass - by - value semantics). */
     Model(const Model &rhs) : ObjectBase(-1) { assert(this->id().invalid()); this->assign_copy(rhs); assert(this->id().valid()); assert(this->id() == rhs.id()); }
-    explicit Model(Model &&rhs) : ObjectBase(-1) { assert(this->id().invalid()); this->assign_copy(std::move(rhs)); assert(this->id().valid()); assert(this->id() == rhs.id()); }
+    // BBS: remove explicit, prefer use move constructor in function return model
+    Model(Model &&rhs) : ObjectBase(-1) { assert(this->id().invalid()); this->assign_copy(std::move(rhs)); assert(this->id().valid()); assert(this->id() == rhs.id()); }
     Model& operator=(const Model &rhs) { this->assign_copy(rhs); assert(this->id().valid()); assert(this->id() == rhs.id()); return *this; }
     Model& operator=(Model &&rhs) { this->assign_copy(std::move(rhs)); assert(this->id().valid()); assert(this->id() == rhs.id()); return *this; }
 
     OBJECTBASE_DERIVED_COPY_MOVE_CLONE(Model)
 
-    enum class LoadAttribute : int {
-        AddDefaultInstances,
-        CheckVersion
-    };
-    using LoadAttributes = enum_bitmask<LoadAttribute>;
-
+    //BBS: add part plate related logic
+    // BBS: backup
+    //BBS: is_xxx is used for is_bbs_3mf when loading 3mf, is used for is_inches when loading amf
     static Model read_from_file(
-        const std::string& input_file, 
+        const std::string& input_file,
         DynamicPrintConfig* config = nullptr, ConfigSubstitutionContext* config_substitutions = nullptr,
-        LoadAttributes options = LoadAttribute::AddDefaultInstances);
+        LoadStrategy options = LoadStrategy::AddDefaultInstances, PlateDataPtrs* plate_data = nullptr,
+        std::vector<Preset*>* project_presets = nullptr, bool* is_xxx = nullptr, Semver* file_version = nullptr, Import3mfProgressFn proFn = nullptr,
+        ImportStepProgressFn stepFn = nullptr, StepIsUtf8Fn stepIsUtf8Fn = nullptr, BBLProject* project = nullptr);
+    // BBS
+    static double findMaxSpeed(const ModelObject* object);
+    // BBS: backup
     static Model read_from_archive(
-        const std::string& input_file, 
+        const std::string& input_file,
         DynamicPrintConfig* config, ConfigSubstitutionContext* config_substitutions,
-        LoadAttributes options = LoadAttribute::AddDefaultInstances);
+        LoadStrategy options = LoadStrategy::AddDefaultInstances, PlateDataPtrs* plate_data = nullptr, std::vector<Preset*>* project_presets = nullptr, bool* is_bbl_3mf = nullptr, Semver* file_version = nullptr, Import3mfProgressFn proFn = nullptr, BBLProject* project = nullptr);
 
     // Add a new ModelObject to this Model, generate a new ID for this ModelObject.
     ModelObject* add_object();
@@ -1094,6 +1289,11 @@ public:
     bool         delete_object(ObjectID id);
     bool         delete_object(ModelObject* object);
     void         clear_objects();
+    // BBS: backup, reuse objects
+    void         collect_reusable_objects(std::vector<ObjectBase *> & objects);
+    void         set_object_backup_id(ModelObject const & object, int uuid);
+    int          get_object_backup_id(ModelObject const & object); // generate new if needed
+    int          get_object_backup_id(ModelObject const & object) const; // generate new if needed
 
     ModelMaterial* add_material(t_model_material_id material_id);
     ModelMaterial* add_material(t_model_material_id material_id, const ModelMaterial &other);
@@ -1107,14 +1307,14 @@ public:
     bool          add_default_instances();
     // Returns approximate axis aligned bounding box of this model
     BoundingBoxf3 bounding_box() const;
-    // Set the print_volume_state of PrintObject::instances, 
+    // Set the print_volume_state of PrintObject::instances,
     // return total number of printable objects.
     unsigned int  update_print_volume_state(const BuildVolume &build_volume);
     // Returns true if any ModelObject was modified.
     bool 		  center_instances_around_point(const Vec2d &point);
     void 		  translate(coordf_t x, coordf_t y, coordf_t z) { for (ModelObject *o : this->objects) o->translate(x, y, z); }
     TriangleMesh  mesh() const;
-    
+
     // Croaks if the duplicated objects do not fit the print bed.
     void duplicate_objects_grid(size_t x, size_t y, coordf_t dist);
 
@@ -1135,6 +1335,16 @@ public:
     std::string   propose_export_file_name_and_path() const;
     // Propose an output path, replace extension. The new_extension shall contain the initial dot.
     std::string   propose_export_file_name_and_path(const std::string &new_extension) const;
+    //BBS: add auxiliary files temp path
+    std::string   get_auxiliary_file_temp_path();
+
+    // BBS: backup
+    std::string   get_backup_path();
+    std::string   get_backup_path(const std::string &sub_path);
+    void          set_backup_path(const std::string &path);
+    void          load_from(Model & model);
+    bool          is_need_backup() { return need_backup;  }
+    void          set_need_backup();
 
     // Checks if any of objects is painted using the fdm support painting gizmo.
     bool          is_fdm_support_painted() const;
@@ -1144,19 +1354,31 @@ public:
     bool          is_mm_painted() const;
 
 private:
-    explicit Model(int) : ObjectBase(-1) { assert(this->id().invalid()); }
+    explicit Model(int) : ObjectBase(-1)
+        {
+        assert(this->id().invalid());
+    }
 	void assign_new_unique_ids_recursive();
 	void update_links_bottom_up_recursive();
 
 	friend class cereal::access;
 	friend class UndoRedo::StackImpl;
-	template<class Archive> void serialize(Archive &ar) {
-		Internal::StaticSerializationWrapper<ModelWipeTower> wipe_tower_wrapper(wipe_tower);
-		ar(materials, objects, wipe_tower_wrapper);
+    template<class Archive> void load(Archive& ar) {
+        Internal::StaticSerializationWrapper<ModelWipeTower> wipe_tower_wrapper(wipe_tower);
+        ar(materials, objects, wipe_tower_wrapper);
     }
-};
+    template<class Archive> void save(Archive& ar) const {
+        Internal::StaticSerializationWrapper<ModelWipeTower const> wipe_tower_wrapper(wipe_tower);
+        ar(materials, objects, wipe_tower_wrapper);
+    }
 
-ENABLE_ENUM_BITMASK_OPERATORS(Model::LoadAttribute)
+    //BBS: add aux temp directory
+    // BBS: backup
+    std::string backup_path;
+    bool need_backup = false;
+    std::map<int, int> object_backup_id_map; // ObjectId -> backup id;
+    int next_object_backup_id = 1;
+};
 
 #undef OBJECTBASE_DERIVED_COPY_MOVE_CLONE
 #undef OBJECTBASE_DERIVED_PRIVATE_COPY_MOVE
@@ -1205,8 +1427,11 @@ static const double SINKING_MIN_Z_THRESHOLD = 0.05;
 
 namespace cereal
 {
-	template <class Archive> struct specialize<Archive, Slic3r::ModelVolume, cereal::specialization::member_load_save> {};
-	template <class Archive> struct specialize<Archive, Slic3r::ModelConfigObject, cereal::specialization::member_serialize> {};
+    template <class Archive> struct specialize<Archive, Slic3r::ModelVolume, cereal::specialization::member_load_save> {};
+    // BBS: backup
+    template <class Archive> struct specialize<Archive, Slic3r::Model, cereal::specialization::member_load_save> {};
+    template <class Archive> struct specialize<Archive, Slic3r::ModelObject, cereal::specialization::member_load_save> {};
+    template <class Archive> struct specialize<Archive, Slic3r::ModelConfigObject, cereal::specialization::member_serialize> {};
 }
 
 #endif /* slic3r_Model_hpp_ */

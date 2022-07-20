@@ -7,22 +7,32 @@
 #include "ConfigWizard.hpp"
 #include "OpenGLManager.hpp"
 #include "libslic3r/Preset.hpp"
+#include "libslic3r/PresetBundle.hpp"
+#include "slic3r/GUI/DeviceManager.hpp"
+#include "slic3r/Utils/NetworkAgent.hpp"
+#include "slic3r/GUI/WebViewDialog.hpp"
 
 #include <wx/app.h>
 #include <wx/colour.h>
 #include <wx/font.h>
 #include <wx/string.h>
 #include <wx/snglinst.h>
+#include <wx/msgdlg.h>
 
 #include <mutex>
 #include <stack>
+
+#define BBL_HAS_FIRST_PAGE 1
 
 class wxMenuItem;
 class wxMenuBar;
 class wxTopLevelWindow;
 class wxDataViewCtrl;
 class wxBookCtrlBase;
+// BBS
+class Notebook;
 struct wxLanguageInfo;
+
 
 namespace Slic3r {
 
@@ -30,27 +40,28 @@ class AppConfig;
 class PresetBundle;
 class PresetUpdater;
 class ModelObject;
-class PrintHostJobQueue;
 class Model;
+class DeviceManager;
+class NetworkAgent;
 
 namespace GUI{
 
-class RemovableDriveManager;
+//class RemovableDriveManager;
 class OtherInstanceMessageHandler;
 class MainFrame;
 class Sidebar;
-class ObjectManipulation;
 class ObjectSettings;
 class ObjectList;
-class ObjectLayers;
 class Plater;
+class ParamsPanel;
 class NotificationManager;
 struct GUI_InitParams;
-
+class ParamsDialog;
 
 
 enum FileType
 {
+    FT_STEP,
     FT_STL,
     FT_OBJ,
     FT_AMF,
@@ -73,34 +84,109 @@ enum FileType
 extern wxString file_wildcards(FileType file_type, const std::string &custom_extension = std::string{});
 
 enum ConfigMenuIDs {
-    ConfigMenuWizard,
-    ConfigMenuSnapshots,
-    ConfigMenuTakeSnapshot,
-    ConfigMenuUpdate,
-    ConfigMenuDesktopIntegration,
+    //ConfigMenuWizard,
+    //ConfigMenuSnapshots,
+    //ConfigMenuTakeSnapshot,
+    //ConfigMenuUpdate,
+    //ConfigMenuDesktopIntegration,
     ConfigMenuPreferences,
-    ConfigMenuModeSimple,
-    ConfigMenuModeAdvanced,
-    ConfigMenuModeExpert,
-    ConfigMenuLanguage,
-    ConfigMenuFlashFirmware,
+    ConfigMenuPrinter,
+    //ConfigMenuModeSimple,
+    //ConfigMenuModeAdvanced,
+    //ConfigMenuLanguage,
+    //ConfigMenuFlashFirmware,
     ConfigMenuCnt,
+};
+
+enum CameraMenuIDs {
+    wxID_CAMERA_PERSPECTIVE,
+    wxID_CAMERA_ORTHOGONAL,
+    wxID_CAMERA_COUNT,
 };
 
 class Tab;
 class ConfigWizard;
 
-static wxString dots("…", wxConvUTF8);
+static wxString dots("...", wxConvUTF8);
 
 // Does our wxWidgets version support markup?
-// https://github.com/prusa3d/PrusaSlicer/issues/4282#issuecomment-634676371
 #if wxUSE_MARKUP && wxCHECK_VERSION(3, 1, 1)
     #define SUPPORTS_MARKUP
 #endif
 
+
+#define  VERSION_LEN    4
+class VersionInfo
+{
+public:
+    std::string version_str;
+    std::string version_name;
+    std::string description;
+    std::string url;
+    bool        force_upgrade{ false };
+    int      ver_items[VERSION_LEN];  // AA.BB.CC.DD
+    VersionInfo() {
+        for (int i = 0; i < VERSION_LEN; i++) {
+            ver_items[i] = 0;
+        }
+        force_upgrade = false;
+    }
+
+    void parse_version_str(std::string str) {
+        version_str = str;
+        std::vector<std::string> items;
+        boost::split(items, str, boost::is_any_of("."));
+        if (items.size() == VERSION_LEN) {
+            try {
+                for (int i = 0; i < VERSION_LEN; i++) {
+                    ver_items[i] = stoi(items[i]);
+                }
+            }
+            catch (...) {
+                ;
+            }
+        }
+    }
+    static std::string convert_full_version(std::string short_version);
+    static std::string convert_short_version(std::string full_version);
+    static std::string get_full_version() {
+        return convert_full_version(SLIC3R_VERSION);
+    }
+
+    /* return > 0, need update */
+    int compare(std::string ver_str) {
+        if (version_str.empty()) return -1;
+
+        int      ver_target[VERSION_LEN];
+        std::vector<std::string> items;
+        boost::split(items, ver_str, boost::is_any_of("."));
+        if (items.size() == VERSION_LEN) {
+            try {
+                for (int i = 0; i < VERSION_LEN; i++) {
+                    ver_target[i] = stoi(items[i]);
+                    if (ver_target[i] < ver_items[i]) {
+                        return 1;
+                    }
+                    else if (ver_target[i] == ver_items[i]) {
+                        continue;
+                    }
+                    else {
+                        return -1;
+                    }
+                }
+            }
+            catch (...) {
+                return -1;
+            }
+        }
+        return -1;
+    }
+};
+
 class GUI_App : public wxApp
 {
 public:
+    //BBS: remove GCodeViewer as seperate APP logic
     enum class EAppMode : unsigned char
     {
         Editor,
@@ -120,13 +206,14 @@ private:
     wxColour        m_color_label_sys;
     wxColour        m_color_label_default;
     wxColour        m_color_window_default;
-#ifdef _WIN32
+    // BBS
+//#ifdef _WIN32
     wxColour        m_color_highlight_label_default;
     wxColour        m_color_hovered_btn_label;
     wxColour        m_color_highlight_default;
     wxColour        m_color_selected_btn_bg;
     bool            m_force_colors_update { false };
-#endif
+//#endif
 
     wxFont		    m_small_font;
     wxFont		    m_bold_font;
@@ -144,28 +231,42 @@ private:
     const wxLanguageInfo		 *m_language_info_best   = nullptr;
 
     OpenGLManager m_opengl_mgr;
-
-    std::unique_ptr<RemovableDriveManager> m_removable_drive_manager;
+    //std::unique_ptr<RemovableDriveManager> m_removable_drive_manager;
 
     std::unique_ptr<ImGuiWrapper> m_imgui;
-    std::unique_ptr<PrintHostJobQueue> m_printhost_job_queue;
-	std::unique_ptr <OtherInstanceMessageHandler> m_other_instance_message_handler;
-    std::unique_ptr <wxSingleInstanceChecker> m_single_instance_checker;
-    std::string m_instance_hash_string;
-	size_t m_instance_hash_int;
+	//std::unique_ptr <OtherInstanceMessageHandler> m_other_instance_message_handler;
+    //std::unique_ptr <wxSingleInstanceChecker> m_single_instance_checker;
+    //std::string m_instance_hash_string;
+	//size_t m_instance_hash_int;
+
+    //BBS
+    bool m_is_closing {false};
+    Slic3r::DeviceManager* m_device_manager;
+    NetworkAgent* m_agent { nullptr };
+    std::vector<std::string> need_delete_presets;   // store setting ids of preset
+
+    VersionInfo version_info;
+
+    boost::thread    m_sync_update_thread;
+    bool             enable_sync = false;
 
 public:
     bool            OnInit() override;
     bool            initialized() const { return m_initialized; }
 
-    explicit GUI_App(EAppMode mode = EAppMode::Editor);
+    //BBS: remove GCodeViewer as seperate APP logic
+    explicit GUI_App();
+    //explicit GUI_App(EAppMode mode = EAppMode::Editor);
     ~GUI_App() override;
 
+    void show_message_box(std::string msg) { wxMessageBox(msg); }
     EAppMode get_app_mode() const { return m_app_mode; }
+    Slic3r::DeviceManager* getDeviceManager() { return m_device_manager; }
+    NetworkAgent* getAgent() { return m_agent; }
     bool is_editor() const { return m_app_mode == EAppMode::Editor; }
     bool is_gcode_viewer() const { return m_app_mode == EAppMode::GCodeViewer; }
     bool is_recreating_gui() const { return m_is_recreating_gui; }
-    std::string logo_name() const { return is_editor() ? "PrusaSlicer" : "PrusaSlicer-gcodeviewer"; }
+    std::string logo_name() const { return is_editor() ? "BambuStudio" : "BambuStudio-gcodeviewer"; }
 
     // To be called after the GUI is fully built up.
     // Process command line parameters cached in this->init_params,
@@ -202,8 +303,8 @@ public:
     const wxColour& get_label_clr_default() { return m_color_label_default; }
     const wxColour& get_window_default_clr(){ return m_color_window_default; }
 
-
-#ifdef _WIN32
+    // BBS
+//#ifdef _WIN32
     const wxColour& get_label_highlight_clr()   { return m_color_highlight_label_default; }
     const wxColour& get_highlight_default_clr() { return m_color_highlight_default; }
     const wxColour& get_color_hovered_btn_label() { return m_color_hovered_btn_label; }
@@ -212,7 +313,7 @@ public:
 #ifdef _MSW_DARK_MODE
     void            force_menu_update();
 #endif //_MSW_DARK_MODE
-#endif
+//#endif
 
     const wxFont&   small_font()            { return m_small_font; }
     const wxFont&   bold_font()             { return m_bold_font; }
@@ -233,6 +334,41 @@ public:
     void            import_model(wxWindow *parent, wxArrayString& input_files) const;
     void            load_gcode(wxWindow* parent, wxString& input_file) const;
 
+    void            ShowUserGuide();
+    void            ShowDailyTip();
+    void            ShowUserLogin();
+    void            ShowOnlyFilament();
+    //BBS
+    void            request_login(bool show_user_info = false);
+    bool            check_login();
+    void            get_login_info();
+    bool            is_user_login();
+
+    void            request_user_login(int online_login);
+    void            request_user_logout();
+    int             request_user_unbind(std::string dev_id);
+    std::string     handle_web_request(std::string cmd);
+    void            handle_script_message(std::string msg);
+    void            request_model_download(std::string import_json);
+    void            download_project(std::string project_id);
+    void            request_project_download(std::string project_id);
+    void            request_open_project(std::string project_id);
+
+    void            handle_http_error(unsigned int status, std::string body);
+    void            on_http_error(wxCommandEvent &evt);
+    void            on_user_login(wxCommandEvent &evt);
+
+    void            check_update(bool show_tips);
+    void            check_new_version(bool show_tips = false);
+    void            request_new_version();
+    void            enter_force_upgrade();
+    void            no_new_version();
+    void            reload_settings();
+    void            remove_user_presets();
+    void            sync_preset(Preset* preset);
+    void            start_sync_user_preset(bool with_progress_dlg = false);
+    void            stop_sync_user_preset();
+
     static bool     catch_error(std::function<void()> cb, const std::string& err);
 
     void            persist_window_geometry(wxTopLevelWindow *window, bool default_maximized = false);
@@ -242,11 +378,14 @@ public:
     bool            load_language(wxString language, bool initial);
 
     Tab*            get_tab(Preset::Type type);
+    Tab*            get_model_tab(bool part = false);
     ConfigOptionMode get_mode();
     void            save_mode(const /*ConfigOptionMode*/int mode) ;
     void            update_mode();
 
-    void            add_config_menu(wxMenuBar *menu);
+    // BBS
+    //void            add_config_menu(wxMenuBar *menu);
+    //void            add_config_menu(wxMenu* menu);
     bool            has_unsaved_preset_changes() const;
     bool            has_current_preset_changes() const;
     void            update_saved_preset_from_current_preset();
@@ -255,9 +394,11 @@ public:
     void            apply_keeped_preset_modifications();
     bool            check_and_keep_current_preset_changes(const wxString& caption, const wxString& header, int action_buttons, bool* postponed_apply_of_keeped_changes = nullptr);
     bool            can_load_project();
-    bool            check_print_host_queue();
     bool            checked_tab(Tab* tab);
-    void            load_current_presets(bool check_printer_presets = true);
+    //BBS: add preset combox re-active logic
+    void            load_current_presets(bool active_preset_combox = false, bool check_printer_presets = true);
+    std::vector<std::string>& get_delete_cache_presets();
+    void            delete_preset_from_cloud(std::string setting_id);
 
     wxString        current_language_code() const { return m_wxLocale->GetCanonicalName(); }
 	// Translate the language code to a code, for which Prusa Research maintains translations. Defaults to "en_US".
@@ -270,20 +411,23 @@ public:
     // Calls wxLaunchDefaultBrowser if user confirms in dialog.
     bool            open_browser_with_warning_dialog(const wxString& url, int flags = 0);
 #ifdef __APPLE__
-    void            OSXStoreOpenFiles(const wxArrayString &files) override;
+    void            OSXStoreOpenFiles(const wxArrayString &files);
     // wxWidgets override to get an event on open files.
     void            MacOpenFiles(const wxArrayString &fileNames) override;
 #endif /* __APPLE */
 
     Sidebar&             sidebar();
-    ObjectManipulation*  obj_manipul();
     ObjectSettings*      obj_settings();
     ObjectList*          obj_list();
-    ObjectLayers*        obj_layers();
     Plater*              plater();
     const Plater*        plater() const;
+    ParamsPanel*         params_panel();
+    ParamsDialog*        params_dialog();
     Model&      		 model();
     NotificationManager * notification_manager();
+    //BBS
+    void            load_url(wxString url);
+    void run_script(wxString js);
 
     // Parameters extracted from the command line to be passed to GUI after initialization.
     GUI_InitParams* init_params { nullptr };
@@ -296,24 +440,26 @@ public:
 
 	PresetUpdater*  get_preset_updater() { return preset_updater; }
 
-    wxBookCtrlBase* tab_panel() const ;
+    Notebook*       tab_panel() const ;
     int             extruders_cnt() const;
     int             extruders_edited_cnt() const;
 
+    // BBS
+    int             filaments_cnt() const;
+
     std::vector<Tab *>      tabs_list;
+    std::vector<Tab *>      model_tabs_list;
 
-	RemovableDriveManager* removable_drive_manager() { return m_removable_drive_manager.get(); }
-	OtherInstanceMessageHandler* other_instance_message_handler() { return m_other_instance_message_handler.get(); }
-    wxSingleInstanceChecker* single_instance_checker() {return m_single_instance_checker.get();}
+	//RemovableDriveManager* removable_drive_manager() { return m_removable_drive_manager.get(); }
+	//OtherInstanceMessageHandler* other_instance_message_handler() { return m_other_instance_message_handler.get(); }
+    //wxSingleInstanceChecker* single_instance_checker() {return m_single_instance_checker.get();}
 
-	void        init_single_instance_checker(const std::string &name, const std::string &path);
-	void        set_instance_hash (const size_t hash) { m_instance_hash_int = hash; m_instance_hash_string = std::to_string(hash); }
-    std::string get_instance_hash_string ()           { return m_instance_hash_string; }
-	size_t      get_instance_hash_int ()              { return m_instance_hash_int; }
+	//void        init_single_instance_checker(const std::string &name, const std::string &path);
+	//void        set_instance_hash (const size_t hash) { m_instance_hash_int = hash; m_instance_hash_string = std::to_string(hash); }
+    //std::string get_instance_hash_string ()           { return m_instance_hash_string; }
+	//size_t      get_instance_hash_int ()              { return m_instance_hash_int; }
 
     ImGuiWrapper* imgui() { return m_imgui.get(); }
-
-    PrintHostJobQueue& printhost_job_queue() { return *m_printhost_job_queue.get(); }
 
     void            open_web_page_localized(const std::string &http_address);
     bool            may_switch_to_SLA_preset(const wxString& caption);
@@ -325,6 +471,7 @@ public:
     void            gcode_thumbnails_debug();
 #endif // ENABLE_THUMBNAIL_GENERATOR_DEBUG
 
+    OpenGLManager& get_opengl_manager() { return m_opengl_mgr; }
     GLShaderProgram* get_shader(const std::string& shader_name) { return m_opengl_mgr.get_shader(shader_name); }
     GLShaderProgram* get_current_shader() { return m_opengl_mgr.get_current_shader(); }
 
@@ -333,26 +480,32 @@ public:
     int  GetSingleChoiceIndex(const wxString& message, const wxString& caption, const wxArrayString& choices, int initialSelection);
 
 #ifdef __WXMSW__
-    void            associate_3mf_files();
-    void            associate_stl_files();
-    void            associate_gcode_files();
+    // extend is stl/3mf/gcode/step etc
+    void            associate_files(std::wstring extend);
+    void            disassociate_files(std::wstring extend);
 #endif // __WXMSW__
 
 private:
     bool            on_init_inner();
-	void            init_app_config();
-    // returns old config path to copy from if such exists,
-    // returns an empty string if such config path does not exists or if it cannot be loaded.
-    std::string     check_older_app_config(Semver current_version, bool backup);
+    void            init_networking_callbacks();
+    void            init_app_config();
+    //BBS set extra header for http request
+    void            init_http_extra_header();
+    bool            check_older_app_config(Semver current_version, bool backup);
+    void            copy_older_config();
     void            window_pos_save(wxTopLevelWindow* window, const std::string &name);
-    void            window_pos_restore(wxTopLevelWindow* window, const std::string &name, bool default_maximized = false);
+    bool            window_pos_restore(wxTopLevelWindow* window, const std::string &name, bool default_maximized = false);
     void            window_pos_sanitize(wxTopLevelWindow* window);
+    void            window_pos_center(wxTopLevelWindow *window);
     bool            select_language();
 
     bool            config_wizard_startup();
 	void            check_updates(const bool verbose);
 
-    bool            m_datadir_redefined { false }; 
+    bool                    m_init_app_config_from_older { false };
+    bool                    m_datadir_redefined { false };
+    std::string             m_older_data_dir_path;
+    boost::optional<Semver> m_last_config_version;
 };
 
 DECLARE_APP(GUI_App)

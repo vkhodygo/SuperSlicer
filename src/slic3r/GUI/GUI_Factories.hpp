@@ -19,15 +19,29 @@ enum class ModelVolumeType : int;
 
 namespace GUI {
 
+struct SimpleSettingData
+{
+    std::string name;
+    std::string label;
+    int priority;
+};
+
 struct SettingsFactory
 {
 //				     category ->       vector ( option )
     typedef std::map<std::string, std::vector<std::string>> Bundle;
     static std::map<std::string, std::string>               CATEGORY_ICON;
 
+    //BBS: add setting data for table
+    static std::map<std::string, std::vector<SimpleSettingData>>  OBJECT_CATEGORY_SETTINGS;
+    static std::map<std::string, std::vector<SimpleSettingData>>  PART_CATEGORY_SETTINGS;
+
     static wxBitmap                             get_category_bitmap(const std::string& category_name, bool menu_bmp = true);
     static Bundle                               get_bundle(const DynamicPrintConfig* config, bool is_object_settings);
     static std::vector<std::string>             get_options(bool is_part);
+    //BBS: add api to get options for catogary
+    static std::vector<SimpleSettingData> get_visible_options(const std::string& category, const bool is_part);
+    static std::map<std::string, std::vector<SimpleSettingData>> get_all_visible_options(const bool is_part);
 };
 
 class MenuFactory
@@ -55,6 +69,11 @@ public:
     wxMenu* instance_menu();
     wxMenu* layer_menu();
     wxMenu* multi_selection_menu();
+    //BBS: add part plate related logic
+    wxMenu* plate_menu();
+    wxMenu* assemble_object_menu();
+    wxMenu* assemble_part_menu();
+    wxMenu* assemble_multi_selection_menu();
 
 private:
     enum MenuType {
@@ -70,6 +89,11 @@ private:
     MenuWithSeparators m_sla_object_menu;
     MenuWithSeparators m_default_menu;
     MenuWithSeparators m_instance_menu;
+    //BBS: add part plate related logic
+    MenuWithSeparators m_plate_menu;
+    MenuWithSeparators m_assemble_object_menu;
+    MenuWithSeparators m_assemble_part_menu;
+   
 
     // Removed/Prepended Items according to the view mode
     std::array<wxMenuItem*, mtCount> items_increase;
@@ -81,30 +105,44 @@ private:
     void        create_object_menu();
     void        create_sla_object_menu();
     void        create_part_menu();
-    void        create_instance_menu();
+    //BBS: add part plate related logic
+    void        create_plate_menu();
+    //BBS: add bbl object menu
+    void        create_bbl_object_menu();
+    void        create_bbl_part_menu();
+    void        create_bbl_assemble_object_menu();
+    void        create_bbl_assemble_part_menu();
 
     wxMenu*     append_submenu_add_generic(wxMenu* menu, ModelVolumeType type);
     void        append_menu_items_add_volume(wxMenu* menu);
-    wxMenuItem* append_menu_item_layers_editing(wxMenu* menu);
     wxMenuItem* append_menu_item_settings(wxMenu* menu);
     wxMenuItem* append_menu_item_change_type(wxMenu* menu);
     wxMenuItem* append_menu_item_instance_to_object(wxMenu* menu);
     wxMenuItem* append_menu_item_printable(wxMenu* menu);
-    void        append_menu_items_osx(wxMenu* menu);
+    void        append_menu_item_rename(wxMenu* menu);
     wxMenuItem* append_menu_item_fix_through_netfabb(wxMenu* menu);
-    wxMenuItem* append_menu_item_simplify(wxMenu* menu);
-    void        append_menu_item_export_stl(wxMenu* menu);
+    //wxMenuItem* append_menu_item_simplify(wxMenu* menu);
+    void        append_menu_item_export_stl(wxMenu* menu, bool is_mulity_menu = false);
     void        append_menu_item_reload_from_disk(wxMenu* menu);
     void        append_menu_item_replace_with_stl(wxMenu* menu);
     void        append_menu_item_change_extruder(wxMenu* menu);
     void        append_menu_item_delete(wxMenu* menu);
     void        append_menu_item_scale_selection_to_fit_print_volume(wxMenu* menu);
-    void        append_menu_items_convert_unit(wxMenu* menu, int insert_pos = 1); // Add "Conver/Revert..." menu items (from/to inches/meters) after "Reload From Disk"
+    void        append_menu_items_convert_unit(wxMenu* menu); // Add "Conver/Revert..." menu items (from/to inches/meters) after "Reload From Disk"
     void        append_menu_item_merge_to_multipart_object(wxMenu *menu);
-//    void        append_menu_item_merge_to_single_object(wxMenu *menu);
+    void        append_menu_item_merge_to_single_object(wxMenu* menu);
+    void        append_menu_item_merge_parts_to_single_part(wxMenu *menu);
     void        append_menu_items_mirror(wxMenu *menu);
-    void        append_menu_items_instance_manipulation(wxMenu *menu);
-    void        update_menu_items_instance_manipulation(MenuType type);
+    //void        append_menu_items_instance_manipulation(wxMenu *menu);
+    //void        update_menu_items_instance_manipulation(MenuType type);
+    //BBS add bbl menu item
+    void        append_menu_item_clone(wxMenu* menu);
+    void        append_menu_item_simplify(wxMenu* menu);
+    void        append_menu_item_per_object_settings(wxMenu* menu);
+    void        append_menu_item_change_filament(wxMenu* menu);
+    void        append_menu_item_set_printable(wxMenu* menu);
+    void        append_menu_item_locked(wxMenu* menu);
+
 };
 
 }}

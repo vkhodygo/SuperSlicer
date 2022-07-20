@@ -70,7 +70,49 @@ void GLGizmoSeam::render_painter_gizmo() const
     glsafe(::glDisable(GL_BLEND));
 }
 
+void GLGizmoSeam::render_triangles(const Selection& selection) const
+{
+    ClippingPlaneDataWrapper clp_data = this->get_clipping_plane_data();
+    auto* shader = wxGetApp().get_shader("mm_gouraud");
+    if (!shader)
+        return;
+    shader->start_using();
+    shader->set_uniform("clipping_plane", clp_data.clp_dataf);
+    shader->set_uniform("z_range", clp_data.z_range);
+    ScopeGuard guard([shader]() { if (shader) shader->stop_using(); });
 
+    const ModelObject* mo = m_c->selection_info()->model_object();
+    int                mesh_id = -1;
+    for (const ModelVolume* mv : mo->volumes) {
+        if (!mv->is_model_part())
+            continue;
+
+        ++mesh_id;
+
+        const Transform3d trafo_matrix = mo->instances[selection.get_instance_idx()]->get_transformation().get_matrix() * mv->get_matrix();
+
+        bool is_left_handed = trafo_matrix.matrix().determinant() < 0.;
+        if (is_left_handed)
+            glsafe(::glFrontFace(GL_CW));
+
+        glsafe(::glPushMatrix());
+        glsafe(::glMultMatrixd(trafo_matrix.data()));
+
+        float normal_z = -::cos(Geometry::deg2rad(m_highlight_by_angle_threshold_deg));
+        Matrix3f normal_matrix = static_cast<Matrix3f>(trafo_matrix.matrix().block(0, 0, 3, 3).inverse().transpose().cast<float>());
+
+        shader->set_uniform("volume_world_matrix", trafo_matrix);
+        shader->set_uniform("volume_mirrored", is_left_handed);
+        shader->set_uniform("slope.actived", m_parent.is_using_slope());
+        shader->set_uniform("slope.volume_world_normal_matrix", static_cast<Matrix3f>(trafo_matrix.matrix().block(0, 0, 3, 3).inverse().transpose().cast<float>()));
+        shader->set_uniform("slope.normal_z", normal_z);
+        m_triangle_selectors[mesh_id]->render(m_imgui);
+
+        glsafe(::glPopMatrix());
+        if (is_left_handed)
+            glsafe(::glFrontFace(GL_CCW));
+    }
+}
 
 void GLGizmoSeam::on_render_input_window(float x, float y, float bottom_limit)
 {
@@ -79,7 +121,17 @@ void GLGizmoSeam::on_render_input_window(float x, float y, float bottom_limit)
 
     const float approx_height = m_imgui->scaled(12.5f);
     y = std::min(y, bottom_limit - approx_height);
-    m_imgui->set_next_window_pos(x, y, ImGuiCond_Always);
+    //BBS: GUI refactor: move gizmo to the right
+#if BBS_TOOLBAR_ON_TOP
+    m_imgui->set_next_window_pos(x, y, ImGuiCond_Always, 0.0f, 0.0f);
+#else
+    m_imgui->set_next_window_pos(x, y, ImGuiCond_Always, 1.0f, 0.0f);
+#endif
+    //m_imgui->set_next_window_pos(x, y, ImGuiCond_Always);
+
+    //BBS
+    ImGuiWrapper::push_toolbar_style();
+
     m_imgui->begin(get_name(), ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse);
 
     // First calculate width of all the texts that are could possibly be shown. We will decide set the dialog width based on that:
@@ -116,8 +168,8 @@ void GLGizmoSeam::on_render_input_window(float x, float y, float bottom_limit)
     window_width = std::max(window_width, cursor_type_radio_left + cursor_type_radio_sphere + cursor_type_radio_circle);
 
     auto draw_text_with_caption = [this, &caption_max](const wxString& caption, const wxString& text) {
-        static const ImVec4 ORANGE(1.0f, 0.49f, 0.22f, 1.0f);
-        m_imgui->text_colored(ORANGE, caption);
+        //BBS set text colored to BLUE_LIGHT
+        m_imgui->text_colored(ImGuiWrapper::COL_BLUE_LIGHT, caption);
         ImGui::SameLine(caption_max);
         m_imgui->text(text);
     };
@@ -192,7 +244,7 @@ void GLGizmoSeam::on_render_input_window(float x, float y, float bottom_limit)
 
     ImGui::Separator();
     if (m_imgui->button(m_desc.at("remove_all"))) {
-        Plater::TakeSnapshot snapshot(wxGetApp().plater(), _L("Reset selection"), UndoRedo::SnapshotType::GizmoAction);
+        Plater::TakeSnapshot snapshot(wxGetApp().plater(), "Reset selection", UndoRedo::SnapshotType::GizmoAction);
         ModelObject         *mo  = m_c->selection_info()->model_object();
         int                  idx = -1;
         for (ModelVolume *mv : mo->volumes)
@@ -207,11 +259,14 @@ void GLGizmoSeam::on_render_input_window(float x, float y, float bottom_limit)
     }
 
     m_imgui->end();
+
+    //BBS
+    ImGuiWrapper::pop_toolbar_style();
 }
 
 
-
-void GLGizmoSeam::update_model_object() const
+//BBS: remove const
+void GLGizmoSeam::update_model_object()
 {
     bool updated = false;
     ModelObject* mo = m_c->selection_info()->model_object();
@@ -227,13 +282,15 @@ void GLGizmoSeam::update_model_object() const
         const ModelObjectPtrs& mos = wxGetApp().model().objects;
         wxGetApp().obj_list()->update_info_items(std::find(mos.begin(), mos.end(), mo) - mos.begin());
 
+        // BBS: backup
+        Slic3r::save_object_mesh(*mo);
         m_parent.post_event(SimpleEvent(EVT_GLCANVAS_SCHEDULE_BACKGROUND_PROCESS));
     }
 }
 
 
-
-void GLGizmoSeam::update_from_model_object()
+//BBS: add logic to distinguish the first_time_update and later_update
+void GLGizmoSeam::update_from_model_object(bool first_update)
 {
     wxBusyCursor wait;
 
@@ -241,6 +298,10 @@ void GLGizmoSeam::update_from_model_object()
     m_triangle_selectors.clear();
 
     int volume_id = -1;
+    std::vector<std::array<float, 4>> ebt_colors;
+    ebt_colors.push_back(GLVolume::NEUTRAL_COLOR);
+    ebt_colors.push_back(TriangleSelectorGUI::enforcers_color);
+    ebt_colors.push_back(TriangleSelectorGUI::blockers_color);
     for (const ModelVolume* mv : mo->volumes) {
         if (! mv->is_model_part())
             continue;
@@ -250,7 +311,7 @@ void GLGizmoSeam::update_from_model_object()
         // This mesh does not account for the possible Z up SLA offset.
         const TriangleMesh* mesh = &mv->mesh();
 
-        m_triangle_selectors.emplace_back(std::make_unique<TriangleSelectorGUI>(*mesh));
+        m_triangle_selectors.emplace_back(std::make_unique<TriangleSelectorPatch>(*mesh, ebt_colors));
         // Reset of TriangleSelector is done inside TriangleSelectorGUI's constructor, so we don't need it to perform it again in deserialize().
         m_triangle_selectors.back()->deserialize(mv->seam_facets.get_data(), false);
         m_triangle_selectors.back()->request_update_render_data();

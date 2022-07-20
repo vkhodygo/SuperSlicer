@@ -49,6 +49,15 @@ public:
 	bool no_sort() const override { return true; }
 };
 
+class FillMonotonicLine : public FillRectilinear
+{
+public:
+    Fill* clone() const override { return new FillMonotonicLine(*this); }
+    ~FillMonotonicLine() override = default;
+    Polylines fill_surface(const Surface *surface, const FillParams &params) override;
+    bool no_sort() const override { return true; }
+};
+
 class FillGrid : public FillRectilinear
 {
 public:
@@ -107,6 +116,20 @@ public:
 protected:
     // The grid fill will keep the angle constant between the layers, see the implementation of Slic3r::Fill.
     float _layer_angle(size_t idx) const override { return 0.f; }
+};
+
+class FillMonotonicLineWGapFill : public Fill
+{
+public:
+    ~FillMonotonicLineWGapFill() override = default;
+    void fill_surface_extrusion(const Surface *surface, const FillParams &params, ExtrusionEntitiesPtr &out) override;
+
+protected:
+    Fill* clone() const override { return new FillMonotonicLineWGapFill(*this); };
+    bool no_sort() const override { return true; }
+
+private:
+    void fill_surface_by_lines(const Surface* surface, const FillParams& params, Polylines& polylines_out);
 };
 
 Points sample_grid_pattern(const ExPolygon &expolygon, coord_t spacing);

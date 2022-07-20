@@ -9,6 +9,9 @@
 #include <wx/menu.h>
 #include <wx/bmpcbox.h>
 #include <wx/statbmp.h>
+#include <wx/popupwin.h>
+#include <wx/spinctrl.h>
+#include <wx/artprov.h>
 
 #include <vector>
 #include <functional>
@@ -50,10 +53,16 @@ int     mode_icon_px_size();
 
 wxBitmap create_menu_bitmap(const std::string& bmp_name);
 
+// BBS: support resize by fill border
+#if 1
 wxBitmap create_scaled_bitmap(const std::string& bmp_name, wxWindow *win = nullptr, 
     const int px_cnt = 16, const bool grayscale = false,
     const std::string& new_color = std::string(), // color witch will used instead of orange
-    const bool menu_bitmap = false);
+    const bool menu_bitmap = false, const bool resize = false);
+#else
+wxBitmap create_scaled_bitmap(const std::string& bmp_name, wxWindow *win = nullptr, 
+    const int px_cnt = 16, const bool grayscale = false, const bool resize = false);
+#endif
 
 std::vector<wxBitmap*> get_extruder_color_icons(bool thin_icon = false);
 
@@ -140,7 +149,8 @@ public:
     ScalableBitmap( wxWindow *parent,
                     const std::string& icon_name = "",
                     const int px_cnt = 16, 
-                    const bool grayscale = false);
+                    const bool grayscale = false,
+                    const bool resize = false); // BBS: support resize by fill border
 
     ~ScalableBitmap() {}
 
@@ -161,7 +171,8 @@ private:
     wxBitmap        m_bmp = wxBitmap();
     std::string     m_icon_name = "";
     int             m_px_cnt {16};
-    bool            m_grayscale {false};
+    bool            m_grayscale{ false };
+    bool            m_resize{ false };
 };
 
 
@@ -358,7 +369,7 @@ class BlinkingBitmap : public wxStaticBitmap
 {
 public:
     BlinkingBitmap() {};
-    BlinkingBitmap(wxWindow* parent, const std::string& icon_name = "search_blink");
+    BlinkingBitmap(wxWindow* parent, const std::string& icon_name = "blank_16");
 
     ~BlinkingBitmap() {}
 
@@ -374,6 +385,41 @@ private:
     bool            show {false};
 };
 
+
+// BBS add new custom widget
+// ----------------------------------------------------------------------------
+// ImageTransientPopup
+// ----------------------------------------------------------------------------
+
+class ImageTransientPopup : public wxPopupTransientWindow
+{
+    public:
+    ImageTransientPopup( wxWindow *parent, bool scrolled, wxBitmap bmp);
+    virtual ~ImageTransientPopup();
+
+    void SetImage(wxBitmap bmp);
+
+    // wxPopupTransientWindow virtual methods are all overridden to log them
+    virtual void Popup(wxWindow *focus = NULL) wxOVERRIDE;
+    virtual void OnDismiss() wxOVERRIDE;
+    virtual bool ProcessLeftDown(wxMouseEvent& event) wxOVERRIDE;
+    virtual bool Show( bool show = true ) wxOVERRIDE;
+
+private:
+
+    wxScrolledWindow *m_panel;
+    wxStaticBitmap* m_image;
+
+private:
+    void OnMouse( wxMouseEvent &event );
+    void OnSize( wxSizeEvent &event );
+    void OnSetFocus( wxFocusEvent &event );
+    void OnKillFocus( wxFocusEvent &event );
+
+private:
+    wxDECLARE_ABSTRACT_CLASS(ImageTransientPopup);
+    wxDECLARE_EVENT_TABLE();
+};
 
 
 #endif // slic3r_GUI_wxExtensions_hpp_

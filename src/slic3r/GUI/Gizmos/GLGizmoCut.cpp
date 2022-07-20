@@ -154,15 +154,25 @@ void GLGizmoCut::on_render_for_picking()
 
 void GLGizmoCut::on_render_input_window(float x, float y, float bottom_limit)
 {
-    static float last_y = 0.0f;
-    static float last_h = 0.0f;
+    //static float last_y = 0.0f;
+    //static float last_h = 0.0f;
+
+    //BBS: GUI refactor: move gizmo to the right
+#if BBS_TOOLBAR_ON_TOP
+    m_imgui->set_next_window_pos(x, y, ImGuiCond_Always, 0.5f, 0.0f);
+#else
+    m_imgui->set_next_window_pos(x, y, ImGuiCond_Always, 1.0f, 0.0f);
+#endif
+
+    //BBS
+    ImGuiWrapper::push_toolbar_style();
 
     m_imgui->begin(_L("Cut"), ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
 
     const bool imperial_units = wxGetApp().app_config->get("use_inches") == "1";
 
     // adjust window position to avoid overlap the view toolbar
-    const float win_h = ImGui::GetWindowHeight();
+    /*const float win_h = ImGui::GetWindowHeight();
     y = std::min(y, bottom_limit - win_h);
     ImGui::SetWindowPos(ImVec2(x, y), ImGuiCond_Always);
     if (last_h != win_h || last_y != y) {
@@ -176,7 +186,7 @@ void GLGizmoCut::on_render_input_window(float x, float y, float bottom_limit)
             last_h = win_h;
         if (last_y != y)
             last_y = y;
-    }
+    }*/
 
     ImGui::AlignTextToFramePadding();
     m_imgui->text("Z");
@@ -197,17 +207,32 @@ void GLGizmoCut::on_render_input_window(float x, float y, float bottom_limit)
 
     m_imgui->checkbox(_L("Keep upper part"), m_keep_upper);
     m_imgui->checkbox(_L("Keep lower part"), m_keep_lower);
+    m_imgui->checkbox(_L("Cut to parts"), m_cut_to_parts); // BBS
     m_imgui->checkbox(_L("Rotate lower part upwards"), m_rotate_lower);
+
+    // BBS
+    ImGui::Separator();
+    m_imgui->checkbox(_L("Auto Segment"), m_do_segment);
+    m_imgui->disabled_begin(!m_do_segment);
+    ImGui::InputDouble("smoothing_alpha", &m_segment_smoothing_alpha, 0.0f, 0.0f, "%.2f");
+    m_segment_smoothing_alpha = std::max(0.1, std::min(100.0, m_segment_smoothing_alpha));
+    ImGui::InputInt("segment number", &m_segment_number);
+    m_segment_number = std::max(1, m_segment_number);
+    m_imgui->disabled_end();
 
     ImGui::Separator();
 
-    m_imgui->disabled_begin((!m_keep_upper && !m_keep_lower) || m_cut_z <= 0.0 || m_max_z <= m_cut_z);
+    m_imgui->disabled_begin((!m_keep_upper && !m_keep_lower && !m_do_segment) || m_cut_z <= 0.0 || m_max_z <= m_cut_z);
     const bool cut_clicked = m_imgui->button(_L("Perform cut"));
     m_imgui->disabled_end();
 
     m_imgui->end();
 
-    if (cut_clicked && (m_keep_upper || m_keep_lower))
+    //BBS
+    ImGuiWrapper::pop_toolbar_style();
+
+    // BBS: m_do_segment
+    if (cut_clicked && (m_keep_upper || m_keep_lower || m_do_segment))
         perform_cut(m_parent.get_selection());
 }
 
@@ -228,11 +253,14 @@ void GLGizmoCut::perform_cut(const Selection& selection)
     const GLVolume* first_glvolume = selection.get_volume(*selection.get_volume_idxs().begin());
     const double object_cut_z = m_cut_z - first_glvolume->get_sla_shift_z();
 
-    if (0.0 < object_cut_z && object_cut_z < m_max_z)
-        wxGetApp().plater()->cut(object_idx, instance_idx, object_cut_z,
-            only_if(m_keep_upper, ModelObjectCutAttribute::KeepUpper) | 
-            only_if(m_keep_lower, ModelObjectCutAttribute::KeepLower) | 
-            only_if(m_rotate_lower, ModelObjectCutAttribute::FlipLower));
+    // BBS: do segment
+    if (m_do_segment)
+    {
+        wxGetApp().plater()->segment(object_idx, instance_idx, m_segment_smoothing_alpha, m_segment_number);
+    }
+    else if (0.0 < object_cut_z && object_cut_z < m_max_z) {
+        //wxGetApp().plater()->cut(object_idx, instance_idx, object_cut_z, m_keep_upper, m_keep_lower, m_rotate_lower, m_cut_to_parts);
+    }
     else {
         // the object is SLA-elevated and the plane is under it.
     }

@@ -177,24 +177,22 @@ static void trianglemesh_repair_on_import(stl_file &stl)
     BOOST_LOG_TRIVIAL(debug) << "TriangleMesh::repair() finished";
 }
 
-bool TriangleMesh::ReadSTLFile(const char* input_file, bool repair)
-{ 
-    stl_file stl;
-    if (! stl_open(&stl, input_file))
-        return false;
+bool TriangleMesh::from_stl(stl_file& stl, bool repair)
+{
     if (repair)
         trianglemesh_repair_on_import(stl);
 
-    m_stats.number_of_facets        = stl.stats.number_of_facets;
-    m_stats.min                     = stl.stats.min;
-    m_stats.max                     = stl.stats.max;
-    m_stats.size                    = stl.stats.size;
-    m_stats.volume                  = stl.stats.volume;
+#if 0
+    m_stats.number_of_facets = stl.stats.number_of_facets;
+    m_stats.min = stl.stats.min;
+    m_stats.max = stl.stats.max;
+    m_stats.size = stl.stats.size;
+    m_stats.volume = stl.stats.volume;
 
     auto facets_w_1_bad_edge = stl.stats.connected_facets_2_edge - stl.stats.connected_facets_3_edge;
     auto facets_w_2_bad_edge = stl.stats.connected_facets_1_edge - stl.stats.connected_facets_2_edge;
     auto facets_w_3_bad_edge = stl.stats.number_of_facets - stl.stats.connected_facets_1_edge;
-    m_stats.open_edges              = stl.stats.backwards_edges + facets_w_1_bad_edge + facets_w_2_bad_edge * 2 + facets_w_3_bad_edge * 3;
+    m_stats.open_edges = stl.stats.backwards_edges + facets_w_1_bad_edge + facets_w_2_bad_edge * 2 + facets_w_3_bad_edge * 3;
 
     m_stats.repaired_errors = { stl.stats.edges_fixed,
                                 stl.stats.degenerate_facets,
@@ -202,10 +200,20 @@ bool TriangleMesh::ReadSTLFile(const char* input_file, bool repair)
                                 stl.stats.facets_reversed,
                                 stl.stats.backwards_edges };
 
-    m_stats.number_of_parts         = stl.stats.number_of_parts;
+    m_stats.number_of_parts = stl.stats.number_of_parts;
+#endif
 
     stl_generate_shared_vertices(&stl, this->its);
+    fill_initial_stats(this->its, this->m_stats);
     return true;
+}
+
+bool TriangleMesh::ReadSTLFile(const char* input_file, bool repair)
+{ 
+    stl_file stl;
+    if (! stl_open(&stl, input_file))
+        return false;
+    return from_stl(stl, repair);
 }
 
 bool TriangleMesh::write_ascii(const char* output_file)
@@ -408,7 +416,7 @@ ExPolygons TriangleMesh::horizontal_projection() const
 }
 
 // 2D convex hull of a 3D mesh projected into the Z=0 plane.
-Polygon TriangleMesh::convex_hull()
+Polygon TriangleMesh::convex_hull() const
 {
     Points pp;
     pp.reserve(this->its.vertices.size());
@@ -489,10 +497,15 @@ BoundingBoxf3 TriangleMesh::transformed_bounding_box(const Transform3d& trafod, 
 
 TriangleMesh TriangleMesh::convex_hull_3d() const
 {
-    TriangleMesh mesh(its_convex_hull(this->its));
-    // Quite often qhull produces non-manifold mesh.
-    // assert(mesh.stats().manifold());
-    return mesh;
+    // BBS: don't compute convex hull for objects like a single sheet
+    if (this->m_stats.volume>0.001) {
+        TriangleMesh mesh(its_convex_hull(this->its));
+        // Quite often qhull produces non-manifold mesh.
+        // assert(mesh.stats().manifold());
+        return mesh;
+    }
+    else
+        return TriangleMesh();
 }
 
 std::vector<ExPolygons> TriangleMesh::slice(const std::vector<double> &z) const

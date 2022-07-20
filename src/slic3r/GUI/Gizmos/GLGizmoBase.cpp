@@ -4,15 +4,69 @@
 #include <GL/glew.h>
 
 #include "slic3r/GUI/GUI_App.hpp"
+#include "slic3r/GUI/GUI_Colors.hpp"
 
 // TODO: Display tooltips quicker on Linux
 
 namespace Slic3r {
 namespace GUI {
 
+float GLGizmoBase::INV_ZOOM = 1.0f;
+
+
 const float GLGizmoBase::Grabber::SizeFactor = 0.05f;
-const float GLGizmoBase::Grabber::MinHalfSize = 1.5f;
+const float GLGizmoBase::Grabber::MinHalfSize = 4.0f;
 const float GLGizmoBase::Grabber::DraggingScaleFactor = 1.25f;
+const float GLGizmoBase::Grabber::FixedGrabberSize = 16.0f;
+const float GLGizmoBase::Grabber::FixedRadiusSize = 80.0f;
+
+
+std::array<float, 4> GLGizmoBase::DEFAULT_BASE_COLOR = { 0.625f, 0.625f, 0.625f, 1.0f };
+std::array<float, 4> GLGizmoBase::DEFAULT_DRAG_COLOR = { 1.0f, 1.0f, 1.0f, 1.0f };
+std::array<float, 4> GLGizmoBase::DEFAULT_HIGHLIGHT_COLOR = { 1.0f, 0.38f, 0.0f, 1.0f };
+std::array<std::array<float, 4>, 3> GLGizmoBase::AXES_HOVER_COLOR = {{
+                                                                { 0.7f, 0.0f, 0.0f, 1.0f },
+                                                                { 0.0f, 0.7f, 0.0f, 1.0f },
+                                                                { 0.0f, 0.0f, 0.7f, 1.0f }
+                                                                }};
+
+std::array<std::array<float, 4>, 3> GLGizmoBase::AXES_COLOR = { {
+                                                                { 1.0, 0.0f, 0.0f, 1.0f },
+                                                                { 0.0f, 1.0f, 0.0f, 1.0f },
+                                                                { 0.0f, 0.0f, 1.0f, 1.0f }
+                                                                }};
+
+std::array<float, 4> GLGizmoBase::CONSTRAINED_COLOR = { 0.5f, 0.5f, 0.5f, 1.0f };
+std::array<float, 4> GLGizmoBase::FLATTEN_COLOR = { 0.96f, 0.93f, 0.93f, 0.5f };
+std::array<float, 4> GLGizmoBase::FLATTEN_HOVER_COLOR = { 1.0f, 1.0f, 1.0f, 0.75f };
+
+// new style color
+std::array<float, 4> GLGizmoBase::GRABBER_NORMAL_COL = {1.0f, 1.0f, 1.0f, 1.0f};
+std::array<float, 4> GLGizmoBase::GRABBER_HOVER_COL  = {0.863f, 0.125f, 0.063f, 1.0f};
+std::array<float, 4> GLGizmoBase::GRABBER_UNIFORM_COL = {0, 1.0, 1.0, 1.0f};
+std::array<float, 4> GLGizmoBase::GRABBER_UNIFORM_HOVER_COL = {0, 0.7, 0.7, 1.0f};
+
+
+void GLGizmoBase::update_render_colors()
+{
+    GLGizmoBase::AXES_COLOR = { {
+                                GLColor(RenderColor::colors[RenderCol_Grabber_X]),
+                                GLColor(RenderColor::colors[RenderCol_Grabber_Y]),
+                                GLColor(RenderColor::colors[RenderCol_Grabber_Z])
+                                } };
+
+    GLGizmoBase::FLATTEN_COLOR = GLColor(RenderColor::colors[RenderCol_Flatten_Plane]);
+    GLGizmoBase::FLATTEN_HOVER_COLOR = GLColor(RenderColor::colors[RenderCol_Flatten_Plane_Hover]);
+}
+
+void GLGizmoBase::load_render_colors()
+{
+    RenderColor::colors[RenderCol_Grabber_X] = IMColor(GLGizmoBase::AXES_COLOR[0]);
+    RenderColor::colors[RenderCol_Grabber_Y] = IMColor(GLGizmoBase::AXES_COLOR[1]);
+    RenderColor::colors[RenderCol_Grabber_Z] = IMColor(GLGizmoBase::AXES_COLOR[2]);
+    RenderColor::colors[RenderCol_Flatten_Plane] = IMColor(GLGizmoBase::FLATTEN_COLOR);
+    RenderColor::colors[RenderCol_Flatten_Plane_Hover] = IMColor(GLGizmoBase::FLATTEN_HOVER_COLOR);
+}
 
 GLGizmoBase::Grabber::Grabber()
     : center(Vec3d::Zero())
@@ -20,17 +74,15 @@ GLGizmoBase::Grabber::Grabber()
     , dragging(false)
     , enabled(true)
 {
-    color = { 1.0f, 1.0f, 1.0f, 1.0f };
+    color = GRABBER_NORMAL_COL;
+    hover_color = GRABBER_HOVER_COL;
 }
 
 void GLGizmoBase::Grabber::render(bool hover, float size) const
 {
     std::array<float, 4> render_color;
     if (hover) {
-        render_color[0] = (1.0f - color[0]);
-        render_color[1] = (1.0f - color[1]);
-        render_color[2] = (1.0f - color[2]);
-        render_color[3] = color[3];
+        render_color = hover_color;
     }
     else
         render_color = color;
@@ -48,6 +100,19 @@ float GLGizmoBase::Grabber::get_dragging_half_size(float size) const
     return get_half_size(size) * DraggingScaleFactor;
 }
 
+const GLModel& GLGizmoBase::Grabber::get_cube() const
+{
+    if (! cube_initialized) {
+        // This cannot be done in constructor, OpenGL is not yet
+        // initialized at that point (on Linux at least).
+        indexed_triangle_set mesh = its_make_cube(1., 1., 1.);
+        its_translate(mesh, Vec3f(-0.5, -0.5, -0.5));
+        const_cast<GLModel&>(cube).init_from(mesh, BoundingBoxf3{ { -0.5, -0.5, -0.5 }, { 0.5, 0.5, 0.5 } });
+        const_cast<bool&>(cube_initialized) = true;
+    }
+    return cube;
+}
+
 void GLGizmoBase::Grabber::render(float size, const std::array<float, 4>& render_color, bool picking) const
 {
     if (! cube_initialized) {
@@ -59,7 +124,13 @@ void GLGizmoBase::Grabber::render(float size, const std::array<float, 4>& render
         const_cast<bool&>(cube_initialized) = true;
     }
 
-    float fullsize = 2 * (dragging ? get_dragging_half_size(size) : get_half_size(size));
+    //BBS set to fixed size grabber
+    //float fullsize = 2 * (dragging ? get_dragging_half_size(size) : get_half_size(size));
+    float fullsize = 8.0f;
+    if (GLGizmoBase::INV_ZOOM > 0) {
+        fullsize = FixedGrabberSize * GLGizmoBase::INV_ZOOM;
+    }
+
 
     const_cast<GLModel*>(&cube)->set_color(-1, render_color);
 
@@ -135,6 +206,7 @@ void GLGizmoBase::start_dragging()
     }
 
     on_start_dragging();
+    //BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format("this %1%, m_hover_id=%2%\n")%this %m_hover_id;
 }
 
 void GLGizmoBase::stop_dragging()
@@ -147,6 +219,7 @@ void GLGizmoBase::stop_dragging()
     }
 
     on_stop_dragging();
+    //BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format("this %1%, m_hover_id=%2%\n")%this %m_hover_id;
 }
 
 void GLGizmoBase::update(const UpdateData& data)
@@ -162,6 +235,32 @@ bool GLGizmoBase::update_items_state()
     return res;
 };
 
+bool GLGizmoBase::GizmoImguiBegin(const std::string &name, int flags)
+{
+    return m_imgui->begin(name, flags);
+}
+
+void GLGizmoBase::GizmoImguiEnd()
+{
+    last_input_window_width = ImGui::GetWindowWidth();
+    m_imgui->end();
+}
+
+void GLGizmoBase::GizmoImguiSetNextWIndowPos(float x, float y, int flag, float pivot_x, float pivot_y)
+{
+    if (abs(last_input_window_width) > 0.01f) {
+        if (x + last_input_window_width > m_parent.get_canvas_size().get_width()) {
+            if (last_input_window_width > m_parent.get_canvas_size().get_width()) {
+                x = 0;
+            } else {
+                x = m_parent.get_canvas_size().get_width() - last_input_window_width;
+            }
+        }
+    }
+
+    m_imgui->set_next_window_pos(x, y, flag, pivot_x, pivot_y);
+}
+
 std::array<float, 4> GLGizmoBase::picking_color_component(unsigned int id) const
 {
     static const float INV_255 = 1.0f / 255.0f;
@@ -172,7 +271,7 @@ std::array<float, 4> GLGizmoBase::picking_color_component(unsigned int id) const
         id -= m_group_id;
 
     // color components are encoded to match the calculation of volume_id made into GLCanvas3D::_picking_pass()
-    return std::array<float, 4> { 
+    return std::array<float, 4> {
 		float((id >> 0) & 0xff) * INV_255, // red
 		float((id >> 8) & 0xff) * INV_255, // green
 		float((id >> 16) & 0xff) * INV_255, // blue
@@ -182,7 +281,11 @@ std::array<float, 4> GLGizmoBase::picking_color_component(unsigned int id) const
 
 void GLGizmoBase::render_grabbers(const BoundingBoxf3& box) const
 {
+#if ENABLE_FIXED_GRABBER
+    render_grabbers((float)(GLGizmoBase::Grabber::FixedGrabberSize));
+#else
     render_grabbers((float)((box.size().x() + box.size().y() + box.size().z()) / 3.0));
+#endif
 }
 
 void GLGizmoBase::render_grabbers(float size) const
@@ -201,7 +304,11 @@ void GLGizmoBase::render_grabbers(float size) const
 
 void GLGizmoBase::render_grabbers_for_picking(const BoundingBoxf3& box) const
 {
+#if ENABLE_FIXED_GRABBER
+    float mean_size = (float)(GLGizmoBase::Grabber::FixedGrabberSize);
+#else
     float mean_size = (float)((box.size().x() + box.size().y() + box.size().z()) / 3.0);
+#endif
 
     for (unsigned int i = 0; i < (unsigned int)m_grabbers.size(); ++i) {
         if (m_grabbers[i].enabled) {

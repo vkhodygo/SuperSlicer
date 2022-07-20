@@ -6,19 +6,20 @@
 #include "GUI_App.hpp"
 #include "MainFrame.hpp"
 #include "format.hpp"
+#include "Widgets/Button.hpp"
 
 #include <wx/clipbrd.h>
 
-namespace Slic3r { 
+namespace Slic3r {
 namespace GUI {
 
 AboutDialogLogo::AboutDialogLogo(wxWindow* parent)
     : wxPanel(parent, wxID_ANY, wxDefaultPosition, wxDefaultSize)
 {
     this->SetBackgroundColour(*wxWHITE);
-    this->logo = wxBitmap(from_u8(Slic3r::var("PrusaSlicer_192px.png")), wxBITMAP_TYPE_PNG);
+    this->logo = wxBitmap(from_u8(Slic3r::var("BambuStudio_192px.png")), wxBITMAP_TYPE_PNG);
     this->SetMinSize(this->logo.GetSize());
-    
+
     this->Bind(wxEVT_PAINT, &AboutDialogLogo::onRepaint, this);
 }
 
@@ -41,7 +42,7 @@ void AboutDialogLogo::onRepaint(wxEvent &event)
 // -----------------------------------------
 CopyrightsDialog::CopyrightsDialog()
     : DPIDialog(static_cast<wxWindow*>(wxGetApp().mainframe), wxID_ANY, from_u8((boost::format("%1% - %2%")
-        % (wxGetApp().is_editor() ? SLIC3R_APP_NAME : GCODEVIEWER_APP_NAME)
+        % (wxGetApp().is_editor() ? SLIC3R_APP_FULL_NAME : GCODEVIEWER_APP_NAME)
         % _utf8(L("Portions copyright"))).str()),
         wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
 {
@@ -52,79 +53,72 @@ CopyrightsDialog::CopyrightsDialog()
 	this->SetBackgroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOW));
 #endif
 
+    std::string icon_path = (boost::format("%1%/images/BambuStudioTitle.ico") % resources_dir()).str();
+    SetIcon(wxIcon(encode_path(icon_path.c_str()), wxBITMAP_TYPE_ICO));
+
+    wxStaticLine *staticline1 = new wxStaticLine( this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxLI_HORIZONTAL );
+
 	auto sizer = new wxBoxSizer(wxVERTICAL);
-    
+    sizer->Add( staticline1, 0, wxEXPAND | wxALL, 5 );
+
     fill_entries();
 
-    m_html = new wxHtmlWindow(this, wxID_ANY, wxDefaultPosition, 
+    m_html = new wxHtmlWindow(this, wxID_ANY, wxDefaultPosition,
                               wxSize(40 * em_unit(), 20 * em_unit()), wxHW_SCROLLBAR_AUTO);
-
+    m_html->SetMinSize(wxSize(FromDIP(870),FromDIP(520)));
     wxFont font = get_default_font(this);
     const int fs = font.GetPointSize();
     const int fs2 = static_cast<int>(1.2f*fs);
     int size[] = { fs, fs, fs, fs, fs2, fs2, fs2 };
 
     m_html->SetFonts(font.GetFaceName(), font.GetFaceName(), size);
-    m_html->SetBorders(2);        
+    m_html->SetBorders(2);
     m_html->SetPage(get_html_text());
 
     sizer->Add(m_html, 1, wxEXPAND | wxALL, 15);
     m_html->Bind(wxEVT_HTML_LINK_CLICKED, &CopyrightsDialog::onLinkClicked, this);
 
-    wxStdDialogButtonSizer* buttons = this->CreateStdDialogButtonSizer(wxCLOSE);
-    wxGetApp().UpdateDlgDarkUI(this, true);
-    this->SetEscapeId(wxID_CLOSE);
-    this->Bind(wxEVT_BUTTON, &CopyrightsDialog::onCloseDialog, this, wxID_CLOSE);
-    sizer->Add(buttons, 0, wxEXPAND | wxRIGHT | wxBOTTOM, 3);
-
     SetSizer(sizer);
     sizer->SetSizeHints(this);
-    
+
 }
 
 void CopyrightsDialog::fill_entries()
 {
     m_entries = {
-        { "wxWidgets"       , "2019 wxWidgets"                              , "https://www.wxwidgets.org/" },
-        { "OpenGL"          , "1997-2019 The Khronos™ Group Inc"            , "https://www.opengl.org/" },
-        { "GNU gettext"     , "1998, 2019 Free Software Foundation, Inc."   , "https://www.gnu.org/software/gettext/" },
-        { "PoEdit"          , "2019 Václav Slavík"                          , "https://poedit.net/" },
-        { "ImGUI"           , "2014-2019 Omar Cornut"                       , "https://github.com/ocornut/imgui" },
-        { "Eigen"           , ""                                            , "http://eigen.tuxfamily.org" },
-        { "ADMesh"          , "1995, 1996  Anthony D. Martin; "
-                              "2015, ADMesh contributors"                   , "https://admesh.readthedocs.io/en/latest/" },
-        { "Anti-Grain Geometry"
-                            , "2002-2005 Maxim Shemanarev (McSeem)"         , "http://antigrain.com" },
-        { "Boost"           , "1998-2005 Beman Dawes, David Abrahams; "
-                              "2004 - 2007 Rene Rivera"                     , "https://www.boost.org/" },
-        { "Clipper"         , "2010-2015 Angus Johnson "                    , "http://www.angusj.com " },
-        { "GLEW (The OpenGL Extension Wrangler Library)", 
-                              "2002 - 2007, Milan Ikits; "
-                              "2002 - 2007, Marcelo E.Magallon; "
-                              "2002, Lev Povalahev"                         , "http://glew.sourceforge.net/" },
-        { "Libigl"          , "2013 Alec Jacobson and others"               , "https://libigl.github.io/" },
-        { "Qhull"           , "1993-2015 C.B.Barber Arlington and "
-                              "University of Minnesota"                     , "http://qhull.org/" },
-        { "SemVer"          , "2015-2017 Tomas Aparicio"                    , "https://semver.org/" },
-        { "Nanosvg"         , "2013-14 Mikko Mononen"                       , "https://github.com/memononen/nanosvg" },
-        { "Miniz"           , "2013-2014 RAD Game Tools and Valve Software; "
-                              "2010-2014 Rich Geldreich and Tenacious Software LLC"
-                                                                            , "https://github.com/richgel999/miniz" },
-        { "Expat"           , "1998-2000 Thai Open Source Software Center Ltd and Clark Cooper"
-                              "2001-2016 Expat maintainers"                 , "http://www.libexpat.org/" },
-        { "AVRDUDE"         , "2018  Free Software Foundation, Inc."        , "http://savannah.nongnu.org/projects/avrdude" },
-        { "Shinyprofiler"   , "2007-2010 Aidin Abedi"                       , "http://code.google.com/p/shinyprofiler/" },
-        { "Real-Time DXT1/DXT5 C compression library"   
-                                    , "Based on original by fabian \"ryg\" giesen v1.04. "
-                              "Custom version, modified by Yann Collet"     , "https://github.com/Cyan4973/RygsDXTc" },
-        { "Icons for STL and GCODE files."
-                            , "Akira Yasuda"                                , "http://3dp0.com/icons-for-stl-and-gcode/" },
-        { "AppImage packaging for Linux using AppImageKit"
-                            , "2004-2019 Simon Peter and contributors"      , "https://appimage.org/" },
-        { "lib_fts"
-                            , "Forrest Smith"                               , "https://www.forrestthewoods.com/" },
-        { "fast_float"
-                            , "Daniel Lemire, João Paulo Magalhaes and contributors", "https://github.com/fastfloat/fast_float" }
+        { "Admesh",                                         "",      "https://admesh.readthedocs.io/" },
+        { "Anti-Grain Geometry",                            "",      "http://antigrain.com" },
+        { "Boost",                                          "",      "http://www.boost.org" },
+        { "Cereal",                                         "",      "http://uscilab.github.io/cereal" },
+        { "CGAL",                                           "",      "https://www.cgal.org" },
+        { "Clipper",                                        "",      "http://www.angusj.co" },
+        { "libcurl",                                        "",      "https://curl.se/libcurl" },
+        { "Eigen3",                                         "",      "http://eigen.tuxfamily.org" },
+        { "Expat",                                          "",      "http://www.libexpat.org" },
+        { "fast_float",                                     "",      "https://github.com/fastfloat/fast_float" },
+        { "GLEW (The OpenGL Extension Wrangler Library)",   "",      "http://glew.sourceforge.net" },
+        { "GLFW",                                           "",      "https://www.glfw.org" },
+        { "GNU gettext",                                    "",      "https://www.gnu.org/software/gettext" },
+        { "ImGUI",                                          "",      "https://github.com/ocornut/imgui" },
+        { "Libigl",                                         "",      "https://libigl.github.io" },
+        { "libnest2d",                                      "",      "https://github.com/tamasmeszaros/libnest2d" },
+        { "lib_fts",                                        "",      "https://www.forrestthewoods.com" },
+        { "Mesa 3D",                                        "",      "https://mesa3d.org" },
+        { "Miniz",                                          "",      "https://github.com/richgel999/miniz" },
+        { "Nanosvg",                                        "",      "https://github.com/memononen/nanosvg" },
+        { "nlohmann/json",                                  "",      "https://json.nlohmann.me" },
+        { "Qhull",                                          "",      "http://qhull.org" },
+        { "Open Cascade",                                   "",      "https://www.opencascade.com" },
+        { "OpenGL",                                         "",      "https://www.opengl.org" },
+        { "PoEdit",                                         "",      "https://poedit.net" },
+        { "PrusaSlicer",                                    "",      "https://www.prusa3d.com" },
+        { "Real-Time DXT1/DXT5 C compression library",      "",      "https://github.com/Cyan4973/RygsDXTc" },
+        { "SemVer",                                         "",      "https://semver.org" },
+        { "Shinyprofiler",                                  "",      "https://code.google.com/p/shinyprofiler" },
+        { "TBB",                                            "",      "https://www.intel.cn/content/www/cn/zh/developer/tools/oneapi/onetbb.html" },
+        { "wxWidgets",                                      "",      "https://www.wxwidgets.org" },
+        { "zlib",                                           "",      "http://zlib.net" },
+
     };
 }
 
@@ -137,29 +131,36 @@ wxString CopyrightsDialog::get_html_text()
     const auto bgr_clr_str = wxString::Format(wxT("#%02X%02X%02X"), bgr_clr.Red(), bgr_clr.Green(), bgr_clr.Blue());
 
     const wxString copyright_str = _(L("Copyright")) + "&copy; ";
-    // TRN "Slic3r _is licensed under the_ License"
-    const wxString header_str = _(L("License agreements of all following programs (libraries) are part of application license agreement"));
 
     wxString text = wxString::Format(
         "<html>"
             "<body bgcolor= %s link= %s>"
             "<font color=%s>"
-                "<font size=\"5\">%s.</font>"
+                "<font size=\"5\">%s</font><br/>"
+                "<font size=\"5\">%s</font>"
+                "<a href=\"%s\">%s.</a><br/>"
+                "<font size=\"5\">%s.</font><br/>"
                 "<br /><br />"
-                "<font size=\"3\">"
-        , bgr_clr_str, text_clr_str
-        , text_clr_str
-        , header_str);
+                "<font size=\"5\">%s</font><br/>"
+                "<font size=\"5\">%s:</font><br/>"
+                "<br />"
+                "<font size=\"3\">",
+         bgr_clr_str, text_clr_str, text_clr_str,
+        _L("License"),
+        _L("Bambu Studio is licensed under "),
+        "https://www.gnu.org/licenses/agpl-3.0.html",_L("GNU Affero General Public License, version 3"),
+        _L("Bambu Studio is based on PrusaSlicer by Prusa Research, which is from Slic3r by Alessandro Ranellucci and the RepRap community"),
+        _L("Libraries"),
+        _L("This software uses open source components whose copyright and other proprietary rights belong to their respective owners"));
 
     for (auto& entry : m_entries) {
-        text += wxString::Format(
-                    "<a href=\"%s\">%s</a><br/>"
-                    , entry.link, entry.lib_name);
+        text += format_wxstr(
+                    "%s<br/>"
+                    , entry.lib_name);
 
-        if (!entry.copyright.empty())
-            text += format_wxstr(
-                    "%1% %2%<br/><br/>"
-                    , copyright_str, entry.copyright);
+         text += wxString::Format(
+                    "<a href=\"%s\">%s</a><br/><br/>"
+                    , entry.link, entry.link);
     }
 
     text += wxString(
@@ -207,38 +208,40 @@ void CopyrightsDialog::onCloseDialog(wxEvent &)
 }
 
 AboutDialog::AboutDialog()
-    : DPIDialog(static_cast<wxWindow*>(wxGetApp().mainframe), wxID_ANY, from_u8((boost::format(_utf8(L("About %s"))) % (wxGetApp().is_editor() ? SLIC3R_APP_NAME : GCODEVIEWER_APP_NAME)).str()), wxDefaultPosition,
-        wxDefaultSize, /*wxCAPTION*/wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
+    : DPIDialog(static_cast<wxWindow *>(wxGetApp().mainframe),wxID_ANY,from_u8((boost::format(_utf8(L("About %s"))) % (wxGetApp().is_editor() ? SLIC3R_APP_FULL_NAME : GCODEVIEWER_APP_NAME)).str()),wxDefaultPosition,
+        wxDefaultSize, /*wxCAPTION*/wxDEFAULT_DIALOG_STYLE)
 {
     SetFont(wxGetApp().normal_font());
 
     wxColour bgr_clr = wxGetApp().get_window_default_clr();//wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOW);
 	SetBackgroundColour(bgr_clr);
-    wxBoxSizer* hsizer = new wxBoxSizer(wxHORIZONTAL);
+
+    std::string icon_path = (boost::format("%1%/images/BambuStudioTitle.ico") % resources_dir()).str();
+    SetIcon(wxIcon(encode_path(icon_path.c_str()), wxBITMAP_TYPE_ICO));
+
+    wxPanel *m_panel = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(FromDIP(430), FromDIP(237)), wxTAB_TRAVERSAL);
+
+    wxBoxSizer *panel_versizer = new wxBoxSizer(wxVERTICAL);
+    wxBoxSizer *vesizer  = new wxBoxSizer(wxVERTICAL);
+
+    m_panel->SetSizer(panel_versizer);
+
+    wxBoxSizer *ver_sizer = new wxBoxSizer(wxVERTICAL);
 
 	auto main_sizer = new wxBoxSizer(wxVERTICAL);
-	main_sizer->Add(hsizer, 0, wxEXPAND | wxALL, 20);
+    main_sizer->Add(m_panel, 1, wxEXPAND | wxALL, 0);
+    main_sizer->Add(ver_sizer, 0, wxEXPAND | wxALL, 0);
 
     // logo
-    m_logo_bitmap = ScalableBitmap(this, wxGetApp().logo_name(), 192);
-    m_logo = new wxStaticBitmap(this, wxID_ANY, m_logo_bitmap.bmp());
-	hsizer->Add(m_logo, 1, wxALIGN_CENTER_VERTICAL);
-    
-    wxBoxSizer* vsizer = new wxBoxSizer(wxVERTICAL); 	
-    hsizer->Add(vsizer, 2, wxEXPAND|wxLEFT, 20);
+    m_logo_bitmap = ScalableBitmap(this, "BambuStudio_about", 240);
+    m_logo = new wxStaticBitmap(this, wxID_ANY, m_logo_bitmap.bmp(), wxDefaultPosition,wxDefaultSize, 0);
+    m_logo->SetSizer(vesizer);
 
-    // title
-    {
-        wxStaticText* title = new wxStaticText(this, wxID_ANY, wxGetApp().is_editor() ? SLIC3R_APP_NAME : GCODEVIEWER_APP_NAME, wxDefaultPosition, wxDefaultSize);
-        wxFont title_font = GUI::wxGetApp().bold_font();
-        title_font.SetFamily(wxFONTFAMILY_ROMAN);
-        title_font.SetPointSize(24);
-        title->SetFont(title_font);
-        vsizer->Add(title, 0, wxALIGN_LEFT | wxTOP, 10);
-    }
-    
+    panel_versizer->Add(m_logo, 1, wxALL | wxEXPAND, 0);
+
     // version
     {
+        vesizer->Add(0, FromDIP(165), 1, wxEXPAND, FromDIP(5));
         auto version_string = _L("Version") + " " + std::string(SLIC3R_VERSION);
         wxStaticText* version = new wxStaticText(this, wxID_ANY, version_string.c_str(), wxDefaultPosition, wxDefaultSize);
         wxFont version_font = GetFont();
@@ -247,74 +250,60 @@ AboutDialog::AboutDialog()
         #else
             version_font.SetPointSize(11);
         #endif
+        version_font.SetPointSize(12);
         version->SetFont(version_font);
-        vsizer->Add(version, 0, wxALIGN_LEFT | wxBOTTOM, 10);
+        version->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_HIGHLIGHTTEXT));
+        version->SetBackgroundColour(wxColour(0, 174, 66));
+        vesizer->Add(version, 0, wxALL | wxALIGN_CENTER_HORIZONTAL, FromDIP(5));
+        vesizer->Add(0, 0, 1, wxEXPAND, FromDIP(5));
     }
-    
+
+    wxStaticText *html_text = new wxStaticText(this, wxID_ANY, "Copyright(C) 2021-2022 Bambu Lab", wxDefaultPosition, wxDefaultSize);
+    ver_sizer->Add(0, 0, 0, wxTOP, FromDIP(38));
+    html_text->SetForegroundColour(wxColour(107, 107, 107));
+    ver_sizer->Add(html_text, 0, wxALL | wxALIGN_CENTER_HORIZONTAL, 0);
+
     // text
-    m_html = new wxHtmlWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxHW_SCROLLBAR_AUTO/*NEVER*/);
-    {
-        m_html->SetMinSize(wxSize(-1, 16 * wxGetApp().em_unit()));
-        wxFont font = get_default_font(this);
-        const auto text_clr = wxGetApp().get_label_clr_default();//wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT);
-		auto text_clr_str = wxString::Format(wxT("#%02X%02X%02X"), text_clr.Red(), text_clr.Green(), text_clr.Blue());
-		auto bgr_clr_str = wxString::Format(wxT("#%02X%02X%02X"), bgr_clr.Red(), bgr_clr.Green(), bgr_clr.Blue());
+    m_html = new wxHtmlWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxHW_SCROLLBAR_NEVER /*NEVER*/);
+      {
+          wxFont font = get_default_font(this);
+          const int fs = font.GetPointSize()-1;
+          int size[] = {fs,fs,fs,fs,fs,fs,fs};
+          m_html->SetFonts(font.GetFaceName(), font.GetFaceName(), size);
+          m_html->SetMinSize(wxSize(FromDIP(-1), FromDIP(16)));
+          m_html->SetBorders(2);
+          const auto text = from_u8(
+              (boost::format(
+              "<html>"
+              "<body>"
+              "<p style=\"text-align:center\"><a  href=\"www.bambulab.com\">www.bambulab.com</ a></p>"
+              "</body>"
+              "</html>")
+            ).str());
+          m_html->SetPage(text);
+          ver_sizer->Add(m_html, 0, wxEXPAND, 0);
+          m_html->Bind(wxEVT_HTML_LINK_CLICKED, &AboutDialog::onLinkClicked, this);
+      }
+    //Add "Portions copyright" button
+    Button* button_portions = new Button(this,_L("Portions copyright"));
+    StateColor report_bg(std::pair<wxColour, int>(wxColour(255, 255, 255), StateColor::Disabled), std::pair<wxColour, int>(wxColour(206, 206, 206), StateColor::Pressed),
+                         std::pair<wxColour, int>(wxColour(238, 238, 238), StateColor::Hovered), std::pair<wxColour, int>(wxColour(255, 255, 255), StateColor::Enabled),
+                         std::pair<wxColour, int>(wxColour(255, 255, 255), StateColor::Normal));
+    button_portions->SetBackgroundColor(report_bg);
+    StateColor report_bd(std::pair<wxColour, int>(wxColour(144, 144, 144), StateColor::Disabled), std::pair<wxColour, int>(wxColour(38, 46, 48), StateColor::Enabled));
+    button_portions->SetBorderColor(report_bd);
+    StateColor report_text(std::pair<wxColour, int>(wxColour(144, 144, 144), StateColor::Disabled), std::pair<wxColour, int>(wxColour(38, 46, 48), StateColor::Enabled));
+    button_portions->SetTextColor(report_text);
+    button_portions->SetFont(Label::Body_12);
+    button_portions->SetCornerRadius(FromDIP(12));
+    button_portions->SetMinSize(wxSize(FromDIP(120), FromDIP(24)));
 
-		const int fs = font.GetPointSize()-1;
-        int size[] = {fs,fs,fs,fs,fs,fs,fs};
-        m_html->SetFonts(font.GetFaceName(), font.GetFaceName(), size);
-        m_html->SetBorders(2);
-        const std::string copyright_str = _utf8(L("Copyright"));
-        // TRN "Slic3r _is licensed under the_ License"
-        const std::string is_lecensed_str = _utf8(L("is licensed under the"));
-        const std::string license_str = _utf8(L("GNU Affero General Public License, version 3"));
-        const std::string based_on_str = _utf8(L("PrusaSlicer is based on Slic3r by Alessandro Ranellucci and the RepRap community."));
-        const std::string contributors_str = _utf8(L("Contributions by Henrik Brix Andersen, Nicolas Dandrimont, Mark Hindess, Petr Ledvina, Joseph Lenox, Y. Sapir, Mike Sheldrake, Vojtech Bubnik and numerous others."));
-        const auto text = from_u8(
-            (boost::format(
-            "<html>"
-            "<body bgcolor= %1% link= %2%>"
-            "<font color=%3%>"
-            "%4% &copy; 2016-2021 Prusa Research. <br />"
-            "%5% &copy; 2011-2018 Alessandro Ranellucci. <br />"
-            "<a href=\"http://slic3r.org/\">Slic3r</a> %6% "
-            "<a href=\"http://www.gnu.org/licenses/agpl-3.0.html\">%7%</a>."
-            "<br /><br />"
-            "%8%"
-            "<br /><br />"
-            "%9%"
-            "</font>"
-            "</body>"
-            "</html>") % bgr_clr_str % text_clr_str % text_clr_str
-            % copyright_str % copyright_str
-            % is_lecensed_str
-            % license_str
-            % based_on_str
-            % contributors_str).str());
-        m_html->SetPage(text);
-        vsizer->Add(m_html, 1, wxEXPAND | wxBOTTOM, 10);
-        m_html->Bind(wxEVT_HTML_LINK_CLICKED, &AboutDialog::onLinkClicked, this);
-    }
+    ver_sizer->Add( 0, 0, 0, wxTOP, FromDIP(22));
+    ver_sizer->Add(button_portions, 0, wxALIGN_CENTER_HORIZONTAL|wxALL,0);
+    ver_sizer->Add( 0, 0, 0, wxTOP, FromDIP(38));
+    button_portions->Bind(wxEVT_BUTTON, &AboutDialog::onCopyrightBtn, this);
 
-
-    wxStdDialogButtonSizer* buttons = this->CreateStdDialogButtonSizer(wxCLOSE);
-
-    m_copy_rights_btn_id = NewControlId();
-    auto copy_rights_btn = new wxButton(this, m_copy_rights_btn_id, _L("Portions copyright")+dots);
-    buttons->Insert(0, copy_rights_btn, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, 5);
-    copy_rights_btn->Bind(wxEVT_BUTTON, &AboutDialog::onCopyrightBtn, this);
-
-    m_copy_version_btn_id = NewControlId();
-    auto copy_version_btn = new wxButton(this, m_copy_version_btn_id, _L("Copy Version Info"));
-    buttons->Insert(1, copy_version_btn, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, 5);
-    copy_version_btn->Bind(wxEVT_BUTTON, &AboutDialog::onCopyToClipboard, this);
-
-    wxGetApp().UpdateDlgDarkUI(this, true);
-    
-    this->SetEscapeId(wxID_CLOSE);
-    this->Bind(wxEVT_BUTTON, &AboutDialog::onCloseDialog, this, wxID_CLOSE);
-    vsizer->Add(buttons, 0, wxEXPAND | wxRIGHT | wxBOTTOM, 3);
-
+    m_panel->Layout();
 	SetSizer(main_sizer);
 	main_sizer->SetSizeHints(this);
 }

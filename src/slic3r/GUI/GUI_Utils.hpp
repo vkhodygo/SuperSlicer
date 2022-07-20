@@ -21,6 +21,9 @@
 #include <chrono>
 
 #include "Event.hpp"
+#include "../libslic3r/libslic3r_version.h"
+#include "../libslic3r/Utils.hpp"
+
 
 class wxCheckBox;
 class wxTopLevelWindow;
@@ -30,6 +33,29 @@ class wxRect;
 
 namespace Slic3r {
 namespace GUI {
+
+inline int hex_to_int(const char c)
+{
+    return (c >= '0' && c <= '9') ? int(c - '0') : (c >= 'A' && c <= 'F') ? int(c - 'A') + 10 : (c >= 'a' && c <= 'f') ? int(c - 'a') + 10 : -1;
+}
+
+static std::array<float, 4> decode_color_to_float_array(const std::string color)
+{
+    // set alpha to 1.0f by default
+    std::array<float, 4> ret = {0, 0, 0, 1.0f};
+    const char *         c   = color.data() + 1;
+    if (color.size() == 7 && color.front() == '#') {
+        for (size_t j = 0; j < 3; ++j) {
+            int digit1 = hex_to_int(*c++);
+            int digit2 = hex_to_int(*c++);
+            if (digit1 == -1 || digit2 == -1) break;
+            ret[j] = float(digit1 * 16 + digit2) / 255.0f;
+        }
+    }
+    return ret;
+}
+
+extern CopyFileResult copy_file_gui(const std::string &from, const std::string &to, std::string& error_message, const bool with_check = false);
 
 #ifdef _WIN32
 // USB HID attach / detach events from Windows OS.
@@ -90,10 +116,10 @@ public:
         m_prev_scale_factor = m_scale_factor;
 		m_normal_font = get_default_font_for_dpi(this, dpi);
 
-        /* Because of default window font is a primary display font, 
+        /* Because of default window font is a primary display font,
          * We should set correct font for window before getting em_unit value.
          */
-#ifndef __WXOSX__ // Don't call SetFont under OSX to avoid name cutting in ObjectList 
+#ifndef __WXOSX__ // Don't call SetFont under OSX to avoid name cutting in ObjectList
         this->SetFont(m_normal_font);
 #endif
         this->CenterOnParent();
@@ -259,7 +285,7 @@ private:
         m_prev_scale_factor = m_scale_factor;
     }
 
-#if 0 //#ifdef _WIN32  // #ysDarkMSW - Allow it when we deside to support the sustem colors for application 
+#if 0 //#ifdef _WIN32  // #ysDarkMSW - Allow it when we deside to support the sustem colors for application
     bool HandleSettingChange(WXWPARAM wParam, WXLPARAM lParam) override
     {
         update_dark_ui(this);
@@ -401,6 +427,7 @@ public:
     bool get_maximized() const { return maximized; }
 
     void sanitize_for_display(const wxRect &screen_rect);
+    void center_for_display(const wxRect &screen_rect);
     std::string serialize() const;
 };
 
@@ -423,6 +450,17 @@ public:
 
     ~TaskTimer();
 };
+
+
+/* Image Generator */
+#define _3MF_COVER_SIZE                  wxSize(240, 240)
+#define PRINTER_THUMBNAIL_SMALL_SIZE     wxSize(252, 188)
+#define PRINTER_THUMBNAIL_MIDDLE_SIZE    wxSize(680, 680)
+#define GERNERATE_IMAGE_RESIZE           0
+#define GERNERATE_IMAGE_CROP_VERTICAL    1
+
+bool load_image(const std::string& filename, wxImage &image);
+bool generate_image(const std::string &filename, wxImage &image, wxSize img_size, int method = GERNERATE_IMAGE_RESIZE);
 
 }}
 

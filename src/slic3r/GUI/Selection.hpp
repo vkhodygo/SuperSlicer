@@ -224,6 +224,9 @@ private:
     float m_scale_factor;
     bool m_dragging;
 
+    // BBS
+    EMode m_volume_selection_mode{ Instance };
+
 public:
     Selection();
 
@@ -253,6 +256,12 @@ public:
 
     void add_volumes(EMode mode, const std::vector<unsigned int>& volume_idxs, bool as_single_selection = true);
     void remove_volumes(EMode mode, const std::vector<unsigned int>& volume_idxs);
+
+    //BBS
+    void add_curr_plate();
+    void remove_curr_plate();
+    void clone(int numbers = 1);
+    void set_printable(bool printable);
 
     void add_all();
     void remove_all();
@@ -332,6 +341,9 @@ public:
 
     void translate(unsigned int object_idx, const Vec3d& displacement);
     void translate(unsigned int object_idx, unsigned int instance_idx, const Vec3d& displacement);
+    //BBS: add partplate related logic
+    void notify_instance_update(int object_idx, int instance_idx);
+    void set_volume_selection_mode(EMode mode) { m_volume_selection_mode = mode; }
 
     void erase();
 
@@ -339,14 +351,21 @@ public:
 #if ENABLE_RENDER_SELECTION_CENTER
     void render_center(bool gizmo_is_dragging) const;
 #endif // ENABLE_RENDER_SELECTION_CENTER
-    void render_sidebar_hints(const std::string& sidebar_field) const;
+    //BBS: GUI refactor: add uniform scale from gizmo
+    void render_sidebar_hints(const std::string& sidebar_field, bool uniform_scale) const;
 
     bool requires_local_axes() const;
 
+    //BBS
+    void cut_to_clipboard();
     void copy_to_clipboard();
     void paste_from_clipboard();
+    //BBS get selected object instance lists
+    std::set<std::pair<int, int>> get_selected_object_instances();
 
     const Clipboard& get_clipboard() const { return m_clipboard; }
+
+    void fill_color(int  extruder_id);
 
     // returns the list of idxs of the volumes contained into the object with the given idx
     std::vector<unsigned int> get_volume_idxs_from_object(unsigned int object_idx) const;
@@ -374,7 +393,8 @@ private:
     void render_bounding_box(const BoundingBoxf3& box, float* color) const;
     void render_sidebar_position_hints(const std::string& sidebar_field) const;
     void render_sidebar_rotation_hints(const std::string& sidebar_field) const;
-    void render_sidebar_scale_hints(const std::string& sidebar_field) const;
+    //BBS: GUI refactor: add uniform_scale from gizmo
+    void render_sidebar_scale_hints(const std::string& sidebar_field, bool gizmo_uniform_scale) const;
     void render_sidebar_layers_hints(const std::string& sidebar_field) const;
 
 public:

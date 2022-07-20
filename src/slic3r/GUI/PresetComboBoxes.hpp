@@ -3,10 +3,12 @@
 
 //#include <wx/bmpcbox.h>
 #include <wx/gdicmn.h>
+#include <wx/clrpicker.h>
 
 #include "libslic3r/Preset.hpp"
 #include "wxExtensions.hpp"
 #include "BitmapComboBox.hpp"
+#include "Widgets/ComboBox.hpp"
 #include "GUI_Utils.hpp"
 
 class wxString;
@@ -28,7 +30,7 @@ class BitmapCache;
 // ---------------------------------
 
 // BitmapComboBox used to presets list on Sidebar and Tabs
-class PresetComboBox : public BitmapComboBox
+class PresetComboBox : public ::ComboBox // BBS
 {
     bool m_show_all { false };
 public:
@@ -62,9 +64,17 @@ public:
     // select preset which is selected in PreseBundle
     void update_from_bundle();
 
-    void edit_physical_printer();
-    void add_physical_printer();
-    bool del_physical_printer(const wxString& note_string = wxEmptyString);
+    // BBS: ams
+    void add_ams_filaments(std::string selected, bool alias_name = false);
+    int  selected_ams_filament() const;
+    
+    void set_filament_idx(const int extr_idx) { m_filament_idx = extr_idx; }
+    int  get_filament_idx() const { return m_filament_idx; }
+
+    // BBS
+    wxString get_tooltip(const Preset& preset);
+
+    static wxColor different_color(wxColor const & color);
 
     virtual wxString get_preset_name(const Preset& preset); 
     Preset::Type     get_type() { return m_type; }
@@ -96,6 +106,11 @@ protected:
     int m_em_unit;
     bool m_suppress_change { true };
 
+    // BBS: ams
+    int  m_filament_idx       = -1;
+    int m_first_ams_filament = 0;
+    int m_last_ams_filament = 0;
+
     // parameters for an icon's drawing
     int icon_height;
     int norm_icon_width;
@@ -111,12 +126,15 @@ protected:
     void validate_selection(bool predicate = false);
     void update_selection();
 
+    // BBS: ams
+    int  update_ams_color();
+
 #ifdef __linux__
     static const char* separator_head() { return "------- "; }
     static const char* separator_tail() { return " -------"; }
 #else // __linux__ 
-    static const char* separator_head() { return "————— "; }
-    static const char* separator_tail() { return " —————"; }
+    static const char* separator_head() { return "------ "; }
+    static const char* separator_tail() { return " ------"; }
 #endif // __linux__
     static wxString    separator(const std::string& label);
 
@@ -144,8 +162,11 @@ public:
 
     ScalableButton* edit_btn { nullptr };
 
-    void set_extruder_idx(const int extr_idx)   { m_extruder_idx = extr_idx; }
-    int  get_extruder_idx() const               { return m_extruder_idx; }
+    // BBS
+    wxButton* clr_picker { nullptr };
+    wxColourData m_clrData;
+
+    wxColor get_color() { return m_color; }
 
     void switch_to_tab();
     void change_extruder_color();
@@ -158,7 +179,8 @@ public:
     void OnSelect(wxCommandEvent& evt) override;
 
 private:
-    int     m_extruder_idx = -1;
+    // BBS
+    wxColor m_color;
 };
 
 

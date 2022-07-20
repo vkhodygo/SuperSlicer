@@ -67,7 +67,9 @@ void Layer::make_slices()
 
 static inline bool layer_needs_raw_backup(const Layer *layer)
 {
-    return ! (layer->regions().size() == 1 && (layer->id() > 0 || layer->object()->config().elefant_foot_compensation.value == 0));
+    // BBS: backup raw slice for generating support
+    //return ! (layer->regions().size() == 1 && (layer->id() > 0 || layer->object()->config().elefant_foot_compensation.value == 0));
+    return true;
 }
 
 void Layer::backup_untyped_slices()
@@ -100,7 +102,8 @@ void Layer::restore_untyped_slices_no_extra_perimeters()
 {
     if (layer_needs_raw_backup(this)) {
         for (LayerRegion *layerm : m_regions)
-        	if (! layerm->region().config().extra_perimeters.value)
+            //BBS: remove extra_perimeters. Always false
+        	//if (! layerm->region().config().extra_perimeters.value)
             	layerm->slices.set(layerm->raw_slices, stInternal);
     } else {
     	assert(m_regions.size() == 1);
@@ -124,7 +127,7 @@ ExPolygons Layer::merged(float offset_scaled) const
 	for (LayerRegion *layerm : m_regions) {
 		const PrintRegionConfig &config = layerm->region().config();
 		// Our users learned to bend Slic3r to produce empty volumes to act as subtracters. Only add the region if it is non-empty.
-		if (config.bottom_solid_layers > 0 || config.top_solid_layers > 0 || config.fill_density > 0. || config.perimeters > 0)
+		if (config.bottom_shell_layers > 0 || config.top_shell_layers > 0 || config.sparse_infill_density > 0. || config.wall_loops > 0)
 			append(polygons, offset(layerm->slices.surfaces, offset_scaled));
 	}
     ExPolygons out = union_ex(polygons);
@@ -163,20 +166,19 @@ void Layer::make_perimeters()
 	            if (! (*it)->slices.empty()) {
 		            LayerRegion* other_layerm = *it;
 		            const PrintRegionConfig &other_config = other_layerm->region().config();
-		            if (config.perimeter_extruder             == other_config.perimeter_extruder
-		                && config.perimeters                  == other_config.perimeters
-		                && config.perimeter_speed             == other_config.perimeter_speed
-		                && config.external_perimeter_speed    == other_config.external_perimeter_speed
-		                && (config.gap_fill_enabled ? config.gap_fill_speed.value : 0.) == 
-                           (other_config.gap_fill_enabled ? other_config.gap_fill_speed.value : 0.)
-		                && config.overhangs                   == other_config.overhangs
-		                && config.opt_serialize("perimeter_extrusion_width") == other_config.opt_serialize("perimeter_extrusion_width")
-		                && config.thin_walls                  == other_config.thin_walls
-		                && config.external_perimeters_first   == other_config.external_perimeters_first
-		                && config.infill_overlap              == other_config.infill_overlap
+		            if (config.wall_filament             == other_config.wall_filament
+		                && config.wall_loops                  == other_config.wall_loops
+		                && config.inner_wall_speed             == other_config.inner_wall_speed
+		                && config.outer_wall_speed    == other_config.outer_wall_speed
+		                && config.gap_infill_speed.value == other_config.gap_infill_speed.value
+		                && config.detect_overhang_wall                   == other_config.detect_overhang_wall
+		                && config.opt_serialize("inner_wall_line_width") == other_config.opt_serialize("inner_wall_line_width")
+		                && config.detect_thin_wall                  == other_config.detect_thin_wall
+		                //&& config.wall_infill_order   == other_config.wall_infill_order
+		                && config.infill_wall_overlap              == other_config.infill_wall_overlap
                         && config.fuzzy_skin                  == other_config.fuzzy_skin
                         && config.fuzzy_skin_thickness        == other_config.fuzzy_skin_thickness
-                        && config.fuzzy_skin_point_dist       == other_config.fuzzy_skin_point_dist)
+                        && config.fuzzy_skin_point_distance       == other_config.fuzzy_skin_point_distance)
 		            {
 			 			other_layerm->perimeters.clear();
 			 			other_layerm->fills.clear();
@@ -200,7 +202,7 @@ void Layer::make_perimeters()
 	                for (LayerRegion *layerm : layerms) {
 	                    for (const Surface &surface : layerm->slices.surfaces)
 	                        slices[surface.extra_perimeters].emplace_back(surface);
-	                    if (layerm->region().config().fill_density > layerm_config->region().config().fill_density)
+	                    if (layerm->region().config().sparse_infill_density > layerm_config->region().config().sparse_infill_density)
 	                    	layerm_config = layerm;
 	                }
 	                // merge the surfaces assigned to each group
@@ -269,6 +271,72 @@ void Layer::export_region_fill_surfaces_to_svg(const char *path) const
             svg.draw(surface.expolygon, surface_type_to_color_name(surface.surface_type), transparency);
     export_surface_type_legend_to_svg(svg, legend_pos);
     svg.Close();
+}
+
+//BBS: method to simplify support path
+void Layer::simplify_support_entity_collection(ExtrusionEntityCollection* entity_collection)
+{
+    for (size_t i = 0; i < entity_collection->entities.size(); i++) {
+        if (ExtrusionEntityCollection* collection = dynamic_cast<ExtrusionEntityCollection*>(entity_collection->entities[i]))
+            this->simplify_support_entity_collection(collection);
+        else if (ExtrusionPath* path = dynamic_cast<ExtrusionPath*>(entity_collection->entities[i]))
+            this->simplify_support_path(path);
+        else if (ExtrusionMultiPath* multipath = dynamic_cast<ExtrusionMultiPath*>(entity_collection->entities[i]))
+            this->simplify_support_multi_path(multipath);
+        else if (ExtrusionLoop* loop = dynamic_cast<ExtrusionLoop*>(entity_collection->entities[i]))
+            this->simplify_support_loop(loop);
+        else
+            throw Slic3r::InvalidArgument("Invalid extrusion entity supplied to simplify_support_entity_collection()");
+    }
+}
+//BBS: method to simplify support path
+void Layer::simplify_support_path(ExtrusionPath * path)
+{
+    const auto print_config = this->object()->print()->config();
+    const bool spiral_mode = print_config.spiral_mode;
+    const bool enable_arc_fitting = print_config.enable_arc_fitting;
+    const auto scaled_resolution = scaled<double>(print_config.resolution.value);
+
+    if (enable_arc_fitting &&
+        !spiral_mode) {
+        path->simplify_by_fitting_arc(SCALED_SUPPORT_RESOLUTION);
+    } else {
+        path->simplify(scaled_resolution);
+    }
+}
+//BBS: method to simplify support path
+void Layer::simplify_support_multi_path(ExtrusionMultiPath* multipath)
+{
+    const auto print_config = this->object()->print()->config();
+    const bool spiral_mode = print_config.spiral_mode;
+    const bool enable_arc_fitting = print_config.enable_arc_fitting;
+    const auto scaled_resolution = scaled<double>(print_config.resolution.value);
+
+    for (size_t i = 0; i < multipath->paths.size(); ++i) {
+        if (enable_arc_fitting &&
+            !spiral_mode) {
+            multipath->paths[i].simplify_by_fitting_arc(SCALED_SUPPORT_RESOLUTION);
+        } else {
+            multipath->paths[i].simplify(scaled_resolution);
+        }
+    }
+}
+//BBS: method to simplify support path
+void Layer::simplify_support_loop(ExtrusionLoop* loop)
+{
+    const auto print_config = this->object()->print()->config();
+    const bool spiral_mode = print_config.spiral_mode;
+    const bool enable_arc_fitting = print_config.enable_arc_fitting;
+    const auto scaled_resolution = scaled<double>(print_config.resolution.value);
+
+    for (size_t i = 0; i < loop->paths.size(); ++i) {
+        if (enable_arc_fitting &&
+            !spiral_mode) {
+            loop->paths[i].simplify_by_fitting_arc(SCALED_SUPPORT_RESOLUTION);
+        } else {
+            loop->paths[i].simplify(scaled_resolution);
+        }
+    }
 }
 
 // Export to "out/LayerRegion-name-%d.svg" with an increasing index with every export.

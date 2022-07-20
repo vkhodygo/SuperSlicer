@@ -5,10 +5,15 @@
 #include "slic3r/GUI/GLToolbar.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmoBase.hpp"
 #include "slic3r/GUI/Gizmos/GLGizmosCommon.hpp"
+//BBS: GUI refactor: add object manipulation
+#include "slic3r/GUI/Gizmos/GizmoObjectManipulation.hpp"
 
 #include "libslic3r/ObjectID.hpp"
 
 #include <map>
+
+//BBS: GUI refactor: to support top layout
+#define BBS_TOOLBAR_ON_TOP 1
 
 namespace Slic3r {
 
@@ -22,7 +27,8 @@ class GLCanvas3D;
 class ClippingPlane;
 enum class SLAGizmoEventType : unsigned char;
 class CommonGizmosDataPool;
-
+//BBS: GUI refactor: add object manipulation
+class GizmoObjectManipulation;
 class Rect
 {
     float m_left;
@@ -60,17 +66,20 @@ public:
     {
         // Order must match index in m_gizmos!
         Move,
-        Scale,
         Rotate,
+        Scale,
         Flatten,
         Cut,
-        Hollow,
-        SlaSupports,
         FdmSupports,
-        Seam,
         MmuSegmentation,
         Simplify,
-        Undefined
+        Modifier,
+        Seam,
+        SlaSupports,
+        // BBS
+        //FaceRecognition,
+        Hollow,
+        Undefined,
     };
 
 private:
@@ -80,6 +89,11 @@ private:
         float icons_size{ Default_Icons_Size };
         float border{ 5.0f };
         float gap_y{ 5.0f };
+        //BBS: GUI refactor: to support top layout
+        float gap_x{ 5.0f };
+        float stride_x() const { return icons_size + gap_x;}
+        float scaled_gap_x() const { return scale * gap_x; }
+        float scaled_stride_x() const { return scale * stride_x(); }
 
         float stride_y() const { return icons_size + gap_y;}
 
@@ -100,6 +114,9 @@ private:
     EType m_current;
     EType m_hover;
     std::pair<EType, bool> m_highlight; // bool true = higlightedShown, false = highlightedHidden
+
+    //BBS: GUI refactor: add object manipulation
+    GizmoObjectManipulation m_object_manipulation;
 
     std::vector<size_t> get_selectable_idxs() const;
     size_t get_gizmo_idx_from_mouse(const Vec2d& mouse_pos) const;
@@ -124,10 +141,23 @@ private:
     bool m_serializing;
     std::unique_ptr<CommonGizmosDataPool> m_common_gizmos_data;
 
+    // key MENU_ICON_NAME, value = ImtextureID
+    std::map<int, void*> icon_list;
 public:
+
+    enum MENU_ICON_NAME {
+        IC_TOOLBAR_RESET            = 0,
+        IC_TOOLBAR_RESET_HOVER,
+        IC_TOOLBAR_TOOLTIP,
+        IC_TOOLBAR_TOOLTIP_HOVER,
+        IC_NAME_COUNT,
+    };
+
     explicit GLGizmosManager(GLCanvas3D& parent);
 
     bool init();
+
+    bool init_icon_textures();
 
     bool init_arrow(const BackgroundTexture::Metadata& arrow_texture);
 
@@ -205,6 +235,17 @@ public:
     Vec3d get_rotation() const;
     void set_rotation(const Vec3d& rotation);
 
+    // BBS
+    void finish_cut_rotation();
+
+    //BBS
+    void* get_icon_texture_id(MENU_ICON_NAME icon) {
+        if (icon_list.find((int)icon) != icon_list.end())
+            return icon_list[icon];
+        else
+            return nullptr;
+    }
+
     Vec3d get_flattening_normal() const;
 
     void set_flattening_data(const ModelObject* model_object);
@@ -244,13 +285,16 @@ public:
     void set_highlight(EType gizmo, bool highlight_shown) { m_highlight = std::pair<EType, bool>(gizmo, highlight_shown); }
     bool get_highlight_state() const { return m_highlight.second; }
 
+    //BBS: GUI refactor: GLToolbar adjust
+    float get_scaled_total_height() const;
+    float get_scaled_total_width() const;
+    //GizmoObjectManipulation& get_object_manipulation() { return m_object_manipulation; }
+    bool get_uniform_scaling() const { return m_object_manipulation.get_uniform_scaling();}
+
 private:
     void render_background(float left, float top, float right, float bottom, float border) const;
     
     void do_render_overlay() const;
-
-    float get_scaled_total_height() const;
-    float get_scaled_total_width() const;
 
     bool generate_icons_texture() const;
 

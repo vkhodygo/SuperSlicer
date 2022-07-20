@@ -4,15 +4,15 @@
 #include <iostream>
 #include <fstream>
 #include <memory>
-#include <typeinfo> 
+#include <typeinfo>
 #include <cassert>
 #include <cstddef>
 
 #include <cereal/types/polymorphic.hpp>
-#include <cereal/types/map.hpp> 
-#include <cereal/types/string.hpp> 
-#include <cereal/types/utility.hpp> 
-#include <cereal/types/vector.hpp> 
+#include <cereal/types/map.hpp>
+#include <cereal/types/string.hpp>
+#include <cereal/types/utility.hpp>
+#include <cereal/types/vector.hpp>
 #include <cereal/archives/binary.hpp>
 #define CEREAL_FUTURE_EXPERIMENTAL
 #include <cereal/archives/adapters.hpp>
@@ -253,7 +253,7 @@ public:
 	}
 
 	void save(size_t active_snapshot_time, size_t current_time) {
-		assert(m_history.empty() || m_history.back().end() <= active_snapshot_time || 
+		assert(m_history.empty() || m_history.back().end() <= active_snapshot_time ||
 			// The snapshot of an immutable object may have already been taken from another mutable object.
 			(m_history.back().begin() <= active_snapshot_time && m_history.back().end() == current_time + 1));
 		if (m_history.empty() || m_history.back().end() < active_snapshot_time)
@@ -312,8 +312,8 @@ public:
 #ifdef SLIC3R_UNDOREDO_DEBUG
 	std::string 				format() override {
 		std::string out = typeid(T).name();
-		out += this->is_serialized() ? 
-			std::string(" len:") + std::to_string(m_serialized.size()) : 
+		out += this->is_serialized() ?
+			std::string(" len:") + std::to_string(m_serialized.size()) :
 			std::string(" shared_ptr:") + ptr_to_string(m_shared_object.get());
 		for (const Interval &interval : m_history)
 			out += std::string(", <") + std::to_string(interval.begin()) + "," + std::to_string(interval.end()) + ")";
@@ -434,8 +434,8 @@ public:
 	}
 
 	// If an object provides a reliable timestamp and the object serializes the timestamp first,
-	// then we may just check the validity of the timestamp against the last snapshot without 
-	// having to serialize the whole object. This reduces the amount of serialization and memcmp 
+	// then we may just check the validity of the timestamp against the last snapshot without
+	// having to serialize the whole object. This reduces the amount of serialization and memcmp
 	// when taking a snapshot.
 	bool try_save_timestamp(size_t active_snapshot_time, size_t current_time, uint64_t timestamp) {
 		assert(m_history.empty() || m_history.back().end() <= active_snapshot_time);
@@ -575,15 +575,16 @@ public:
 	}
 
     // Store the current application state onto the Undo / Redo stack, remove all snapshots after m_active_snapshot_time.
+	void take_snapshot(const std::string& snapshot_name, const Slic3r::Model& model, const Slic3r::GUI::Selection& selection, const Slic3r::GUI::GLGizmosManager& gizmos, const Slic3r::GUI::PartPlateList& plate_list, const SnapshotData& snapshot_data);
     void take_snapshot(const std::string& snapshot_name, const Slic3r::Model& model, const Slic3r::GUI::Selection& selection, const Slic3r::GUI::GLGizmosManager& gizmos, const SnapshotData &snapshot_data);
     void reduce_noisy_snapshots(const std::string& new_name);
-    void load_snapshot(size_t timestamp, Slic3r::Model& model, Slic3r::GUI::GLGizmosManager& gizmos);
+    void load_snapshot(size_t timestamp, Slic3r::Model& model, Slic3r::GUI::GLGizmosManager& gizmos, Slic3r::GUI::PartPlateList& plate_list);
 
 	bool has_undo_snapshot() const;
 	bool has_undo_snapshot(size_t time_to_load) const;
 	bool has_redo_snapshot() const;
-    bool undo(Slic3r::Model &model, const Slic3r::GUI::Selection &selection, Slic3r::GUI::GLGizmosManager &gizmos, const SnapshotData &snapshot_data, size_t jump_to_time);
-    bool redo(Slic3r::Model &model, Slic3r::GUI::GLGizmosManager &gizmos, size_t jump_to_time);
+    bool undo(Slic3r::Model &model, const Slic3r::GUI::Selection &selection, Slic3r::GUI::GLGizmosManager &gizmos, Slic3r::GUI::PartPlateList& plate_list, const SnapshotData &snapshot_data, size_t jump_to_time);
+    bool redo(Slic3r::Model &model, Slic3r::GUI::GLGizmosManager &gizmos, Slic3r::GUI::PartPlateList& plate_list, size_t jump_to_time);
 	void release_least_recently_used();
 
 	// Snapshot history (names with timestamps).
@@ -602,7 +603,10 @@ public:
     void 							mark_current_as_saved() { m_saved_snapshot_time = m_active_snapshot_time; }
     bool 							project_modified() const;
 
-	const Selection& 				selection_deserialized() const { return m_selection; }
+	// BBS: backup and restore
+    bool has_real_change_from(size_t time) const;
+
+    const Selection &selection_deserialized() const { return m_selection; }
 
 //protected:
 	template<typename T> ObjectID save_mutable_object(const T &object);
@@ -620,7 +624,7 @@ public:
 		for (const Snapshot &snapshot : m_snapshots) {
 			if (snapshot.timestamp == m_active_snapshot_time)
 				out += ">>> ";
-			out += std::string("Name: \"") + snapshot.name + "\", timestamp: " + std::to_string(snapshot.timestamp) + 
+			out += std::string("Name: \"") + snapshot.name + "\", timestamp: " + std::to_string(snapshot.timestamp) +
 				", Model ID:" + ((snapshot.model_id == 0) ? "Invalid" : std::to_string(snapshot.model_id)) + "\n";
 		}
 		if (m_active_snapshot_time > m_snapshots.back().timestamp)
@@ -638,7 +642,9 @@ public:
 
 #ifndef NDEBUG
 	bool valid() const {
-		assert(! m_snapshots.empty());
+		//assert(! m_snapshots.empty());
+		if (m_snapshots.empty())
+			return false;
 		assert(m_snapshots.back().is_topmost());
 		auto it = std::lower_bound(m_snapshots.begin(), m_snapshots.end(), Snapshot(m_active_snapshot_time));
 		assert(it != m_snapshots.begin() && it != m_snapshots.end() && it->timestamp == m_active_snapshot_time);
@@ -650,7 +656,7 @@ public:
 #endif /* NDEBUG */
 
 private:
-	template<typename T> ObjectID 	immutable_object_id(const std::shared_ptr<const T> &ptr) { 
+	template<typename T> ObjectID 	immutable_object_id(const std::shared_ptr<const T> &ptr) {
 		return this->immutable_object_id_impl((const void*)ptr.get());
 	}
 	ObjectID     					immutable_object_id_impl(const void *ptr) {
@@ -687,6 +693,7 @@ private:
 	size_t 													m_current_time;
 	// Last selection serialized or deserialized.
 	Selection 												m_selection;
+	std::vector<ObjectBase*> 								m_reusable_objects;
 };
 
 using InputArchive  = cereal::UserDataAdapter<StackImpl, cereal::BinaryInputArchive>;
@@ -706,7 +713,7 @@ class TriangleMesh;
 
 namespace cereal
 {
-	// Let cereal know that there are load / save non-member functions declared for ModelObject*, ignore serialization of pointers triggering 
+	// Let cereal know that there are load / save non-member functions declared for ModelObject*, ignore serialization of pointers triggering
 	// static assert, that cereal does not support serialization of raw pointers.
 	template <class Archive> struct specialize<Archive, Slic3r::Model*, cereal::specialization::non_member_load_save> {};
 	template <class Archive> struct specialize<Archive, Slic3r::ModelObject*, cereal::specialization::non_member_load_save> {};
@@ -714,6 +721,7 @@ namespace cereal
 	template <class Archive> struct specialize<Archive, Slic3r::ModelInstance*, cereal::specialization::non_member_load_save> {};
 	template <class Archive> struct specialize<Archive, Slic3r::ModelMaterial*, cereal::specialization::non_member_load_save> {};
 	template <class Archive> struct specialize<Archive, std::shared_ptr<Slic3r::TriangleMesh>, cereal::specialization::non_member_load_save> {};
+	template <class Archive> struct specialize<Archive, Slic3r::GUI::PartPlate*, cereal::specialization::non_member_load_save> {};
 
 	// Store ObjectBase derived class onto the Undo / Redo stack as a separate object,
 	// store just the ObjectID to this stream.
@@ -798,6 +806,8 @@ namespace cereal
 #include <libslic3r/TriangleMesh.hpp>
 #include <slic3r/GUI/Selection.hpp>
 #include <slic3r/GUI/Gizmos/GLGizmosManager.hpp>
+#include "slic3r/GUI/GUI_App.hpp"
+#include "slic3r/GUI/PartPlate.hpp"
 
 namespace Slic3r {
 namespace UndoRedo {
@@ -862,7 +872,15 @@ template<typename T> ObjectID StackImpl::save_immutable_object(std::shared_ptr<c
 
 template<typename T> T* StackImpl::load_mutable_object(const Slic3r::ObjectID id)
 {
-	T *target = new T();
+	// BBS: reuse objects for backup
+	auto it = std::find_if(m_reusable_objects.begin(), m_reusable_objects.end(), [id](auto o) { return o && o->id() == id; });
+	T* target = nullptr;
+	if (it == m_reusable_objects.end())
+		target = new T();
+	else {
+		target = static_cast<T*>(*it);
+		*it = nullptr;
+	}
 	this->load_mutable_object<T>(id, *target);
 	return target;
 }
@@ -896,6 +914,16 @@ template<typename T> void StackImpl::load_mutable_object(const Slic3r::ObjectID 
 // Store the current application state onto the Undo / Redo stack, remove all snapshots after m_active_snapshot_time.
 void StackImpl::take_snapshot(const std::string& snapshot_name, const Slic3r::Model& model, const Slic3r::GUI::Selection& selection, const Slic3r::GUI::GLGizmosManager& gizmos, const SnapshotData &snapshot_data)
 {
+	Slic3r::GUI::PartPlateList& plate_list = GUI::wxGetApp().plater()->get_partplate_list();
+
+	take_snapshot(snapshot_name, model, selection, gizmos, plate_list, snapshot_data);
+
+	return;
+}
+
+// Store the current application state onto the Undo / Redo stack, remove all snapshots after m_active_snapshot_time.
+void StackImpl::take_snapshot(const std::string& snapshot_name, const Slic3r::Model& model, const Slic3r::GUI::Selection& selection, const Slic3r::GUI::GLGizmosManager& gizmos, const Slic3r::GUI::PartPlateList& plate_list, const SnapshotData& snapshot_data)
+{
 	// Release old snapshot data.
 	assert(m_active_snapshot_time <= m_current_time);
 	for (auto &kvp : m_objects)
@@ -916,6 +944,10 @@ void StackImpl::take_snapshot(const std::string& snapshot_name, const Slic3r::Mo
 		m_selection.volumes_and_instances.emplace_back(selection.get_volume(volume_idx)->geometry_id);
 	this->save_mutable_object<Selection>(m_selection);
     this->save_mutable_object<Slic3r::GUI::GLGizmosManager>(gizmos);
+
+	//BBS:save the partplater related data
+	this->save_mutable_object<Slic3r::GUI::PartPlateList>(plate_list);
+
     // Save the snapshot info.
 	m_snapshots.emplace_back(snapshot_name, m_current_time, model.id().id, snapshot_data);
 	if (topmost_saved)
@@ -932,6 +964,8 @@ void StackImpl::take_snapshot(const std::string& snapshot_name, const Slic3r::Mo
 	std::cout << "After snapshot" << std::endl;
 	this->print();
 #endif /* SLIC3R_UNDOREDO_DEBUG */
+	BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format("snapshot name %1%") % snapshot_name;
+	plate_list.print();
 }
 
 void StackImpl::reduce_noisy_snapshots(const std::string& new_name)
@@ -960,7 +994,7 @@ void StackImpl::reduce_noisy_snapshots(const std::string& new_name)
 	}
 }
 
-void StackImpl::load_snapshot(size_t timestamp, Slic3r::Model& model, Slic3r::GUI::GLGizmosManager& gizmos)
+void StackImpl::load_snapshot(size_t timestamp, Slic3r::Model& model, Slic3r::GUI::GLGizmosManager& gizmos, Slic3r::GUI::PartPlateList& plate_list)
 {
 	// Find the snapshot by time. It must exist.
 	const auto it_snapshot = std::lower_bound(m_snapshots.begin(), m_snapshots.end(), Snapshot(timestamp));
@@ -968,7 +1002,9 @@ void StackImpl::load_snapshot(size_t timestamp, Slic3r::Model& model, Slic3r::GU
 		throw Slic3r::RuntimeError((boost::format("Snapshot with timestamp %1% does not exist") % timestamp).str());
 
 	m_active_snapshot_time = timestamp;
-	model.clear_objects();
+	// BBS: reuse objects for backup, objects should clear children before load them
+	model.collect_reusable_objects(m_reusable_objects);
+	// model.clear_objects();
 	model.clear_materials();
 	this->load_mutable_object<Slic3r::Model>(ObjectID(it_snapshot->model_id), model);
 	model.update_links_bottom_up_recursive();
@@ -979,14 +1015,44 @@ void StackImpl::load_snapshot(size_t timestamp, Slic3r::Model& model, Slic3r::GU
     // Sort the volumes so that we may use binary search.
 	std::sort(m_selection.volumes_and_instances.begin(), m_selection.volumes_and_instances.end());
 	m_active_snapshot_time = timestamp;
+
+	//BBS:load the partplater related data
+	{
+		//Slic3r::GUI::PartPlateList& plate_list = GUI::wxGetApp().plater()->get_partplate_list();
+		std::vector<bool> previous_slice_result;
+		std::vector<std::string> previous_gcode_paths;
+		plate_list.get_sliced_result(previous_slice_result, previous_gcode_paths);
+
+		plate_list.reset(false);
+		this->load_mutable_object<Slic3r::GUI::PartPlateList>(plate_list.id(), plate_list);
+		plate_list.rebuild_plates_after_deserialize(previous_slice_result, previous_gcode_paths);
+	}
+	this->m_active_snapshot_time = timestamp;
 	assert(this->valid());
+
+	// BBS: reuse objects for backup
+	for (auto o : m_reusable_objects) {
+		delete o;
+	}
+	m_reusable_objects.clear();
+
+	BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format("snapshot name %1%") % it_snapshot->name;
+	plate_list.print();
 }
 
 bool StackImpl::has_undo_snapshot() const
-{ 
-	assert(this->valid());
+{
+#ifndef NDEBUG
+	if (!this->valid())
+		return false;
+#endif
+	// BBS: undo-redo until modify record
 	auto it = std::lower_bound(m_snapshots.begin(), m_snapshots.end(), Snapshot(m_active_snapshot_time));
-	return -- it != m_snapshots.begin();
+	for (auto it2 = m_snapshots.begin(); it2 != it; ++it2) {
+		if (snapshot_modifies_project(*it2))
+			return true;
+	}
+	return false;
 }
 
 bool StackImpl::has_undo_snapshot(size_t time_to_load) const
@@ -996,13 +1062,23 @@ bool StackImpl::has_undo_snapshot(size_t time_to_load) const
 
 bool StackImpl::has_redo_snapshot() const
 {
-	assert(this->valid());
+#ifndef NDEBUG
+	if (!this->valid())
+		return false;
+#endif
+
+	// BBS: undo-redo until modify record
 	auto it = std::lower_bound(m_snapshots.begin(), m_snapshots.end(), Snapshot(m_active_snapshot_time));
-	return ++ it != m_snapshots.end();
+	for (it; it != m_snapshots.end(); ++it) {
+		if (snapshot_modifies_project(*it))
+			return true;
+	}
+	return false;
 }
 
-bool StackImpl::undo(Slic3r::Model &model, const Slic3r::GUI::Selection &selection, Slic3r::GUI::GLGizmosManager &gizmos, const SnapshotData &snapshot_data, size_t time_to_load)
+bool StackImpl::undo(Slic3r::Model &model, const Slic3r::GUI::Selection &selection, Slic3r::GUI::GLGizmosManager &gizmos, Slic3r::GUI::PartPlateList& plate_list, const SnapshotData &snapshot_data, size_t time_to_load)
 {
+	BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(":time_to_load %1%") % time_to_load;
 	assert(this->valid());
 	if (time_to_load == SIZE_MAX) {
 		auto it_current = std::lower_bound(m_snapshots.begin(), m_snapshots.end(), Snapshot(m_active_snapshot_time));
@@ -1015,8 +1091,7 @@ bool StackImpl::undo(Slic3r::Model &model, const Slic3r::GUI::Selection &selecti
 	bool new_snapshot_taken = false;
 	if (m_active_snapshot_time == m_snapshots.back().timestamp && ! m_snapshots.back().is_topmost_captured()) {
 		// The current state is temporary. The current state needs to be captured to be redoable.
-		//FIXME add new a "topmost" SnapshotType? 
-        this->take_snapshot(topmost_snapshot_name, model, selection, gizmos, snapshot_data);
+        this->take_snapshot(topmost_snapshot_name, model, selection, gizmos, plate_list, snapshot_data);
         // The line above entered another topmost_snapshot_name.
 		assert(m_snapshots.back().is_topmost());
 		assert(! m_snapshots.back().is_topmost_captured());
@@ -1028,7 +1103,7 @@ bool StackImpl::undo(Slic3r::Model &model, const Slic3r::GUI::Selection &selecti
 		assert(m_snapshots.back().is_topmost_captured());
 		new_snapshot_taken = true;
 	}
-    this->load_snapshot(time_to_load, model, gizmos);
+    this->load_snapshot(time_to_load, model, gizmos, plate_list);
 	if (new_snapshot_taken) {
 		// Release old snapshots if the memory allocated due to capturing the top most state is excessive.
 		// Don't release the snapshots here, release them first after the scene and background processing gets updated, as this will release some references
@@ -1042,8 +1117,9 @@ bool StackImpl::undo(Slic3r::Model &model, const Slic3r::GUI::Selection &selecti
 	return true;
 }
 
-bool StackImpl::redo(Slic3r::Model& model, Slic3r::GUI::GLGizmosManager& gizmos, size_t time_to_load)
+bool StackImpl::redo(Slic3r::Model& model, Slic3r::GUI::GLGizmosManager& gizmos, Slic3r::GUI::PartPlateList& plate_list, size_t time_to_load)
 {
+	BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(":time_to_load %1%") % time_to_load;
 	assert(this->valid());
 	if (time_to_load == SIZE_MAX) {
 		auto it_current = std::lower_bound(m_snapshots.begin(), m_snapshots.end(), Snapshot(m_active_snapshot_time));
@@ -1053,23 +1129,12 @@ bool StackImpl::redo(Slic3r::Model& model, Slic3r::GUI::GLGizmosManager& gizmos,
 	}
 	assert(time_to_load > m_active_snapshot_time);
 	assert(std::binary_search(m_snapshots.begin(), m_snapshots.end(), Snapshot(time_to_load)));
-    this->load_snapshot(time_to_load, model, gizmos);
+    this->load_snapshot(time_to_load, model, gizmos, plate_list);
 #ifdef SLIC3R_UNDOREDO_DEBUG
 	std::cout << "After redo" << std::endl;
  	this->print();
 #endif /* SLIC3R_UNDOREDO_DEBUG */
 	return true;
-}
-
-// If a snapshot modifies the snapshot type, 
-static inline bool snapshot_modifies_project(SnapshotType type)
-{
-	return type == SnapshotType::Action || type == SnapshotType::GizmoAction || type == SnapshotType::ProjectSeparator;
-}
-
-static inline bool snapshot_modifies_project(const Snapshot &snapshot)
-{
-	return snapshot_modifies_project(snapshot.snapshot_data.snapshot_type);
 }
 
 // Release snapshots between begin and end. Only erases data from m_snapshots, not from m_objects!
@@ -1092,7 +1157,7 @@ std::vector<Snapshot>::iterator StackImpl::release_snapshots(std::vector<Snapsho
 			for (; it != end && ! snapshot_modifies_project(*it); ++ it) ;
 			if (it == end && end != m_snapshots.end())
 				// Found a snapshot after end, which captures the same project state.
-				m_saved_snapshot_time = (-- it)->timestamp;				
+				m_saved_snapshot_time = (-- it)->timestamp;
 			else
 				// State of the project is being lost. Indicate a "likely modified" project state until the project is saved again.
 				m_saved_snapshot_time = size_t(-1);
@@ -1237,6 +1302,32 @@ bool StackImpl::project_modified() const
 	return false;
 }
 
+// BBS: check if modify, skip snapshot with '!' ended name
+bool StackImpl::has_real_change_from(size_t time) const
+{
+    if (m_active_snapshot_time == time) return false;
+    auto it_time = std::lower_bound(m_snapshots.begin(),
+                                              m_snapshots.end(),
+                                              Snapshot(time));
+    if (it_time == m_snapshots.end()) return true;
+    auto it_active = std::lower_bound(m_snapshots.begin(),
+                                              m_snapshots.end(),
+                                      Snapshot(m_active_snapshot_time));
+    if (it_active == m_snapshots.end()) return true;
+    if (it_active > it_time) {
+        for (it_time; it_time < it_active; ++it_time) {
+            if (snapshot_modifies_project(*it_time))
+                return true;
+		}
+    } else {
+        for (it_active; it_active < it_time; ++it_active) {
+            if (snapshot_modifies_project(*it_active))
+                return true;
+        }
+	}
+    return false;
+}
+
 // Wrappers of the private implementation.
 Stack::Stack() : pimpl(new StackImpl()) {}
 Stack::~Stack() {}
@@ -1249,13 +1340,15 @@ size_t Stack::memsize() const { return pimpl->memsize(); }
 void Stack::release_least_recently_used() { pimpl->release_least_recently_used(); }
 void Stack::take_snapshot(const std::string& snapshot_name, const Slic3r::Model& model, const Slic3r::GUI::Selection& selection, const Slic3r::GUI::GLGizmosManager& gizmos, const SnapshotData &snapshot_data)
 	{ pimpl->take_snapshot(snapshot_name, model, selection, gizmos, snapshot_data); }
+void Stack::take_snapshot(const std::string& snapshot_name, const Slic3r::Model& model, const Slic3r::GUI::Selection& selection, const Slic3r::GUI::GLGizmosManager& gizmos, const Slic3r::GUI::PartPlateList& plate_list, const SnapshotData& snapshot_data)
+	{ pimpl->take_snapshot(snapshot_name, model, selection, gizmos, plate_list, snapshot_data); }
 void Stack::reduce_noisy_snapshots(const std::string& new_name) { pimpl->reduce_noisy_snapshots(new_name); }
 bool Stack::has_undo_snapshot() const { return pimpl->has_undo_snapshot(); }
 bool Stack::has_undo_snapshot(size_t time_to_load) const { return pimpl->has_undo_snapshot(time_to_load); }
 bool Stack::has_redo_snapshot() const { return pimpl->has_redo_snapshot(); }
-bool Stack::undo(Slic3r::Model& model, const Slic3r::GUI::Selection& selection, Slic3r::GUI::GLGizmosManager& gizmos, const SnapshotData &snapshot_data, size_t time_to_load)
-	{ return pimpl->undo(model, selection, gizmos, snapshot_data, time_to_load); }
-bool Stack::redo(Slic3r::Model& model, Slic3r::GUI::GLGizmosManager& gizmos, size_t time_to_load) { return pimpl->redo(model, gizmos, time_to_load); }
+bool Stack::undo(Slic3r::Model& model, const Slic3r::GUI::Selection& selection, Slic3r::GUI::GLGizmosManager& gizmos, Slic3r::GUI::PartPlateList& plate_list, const SnapshotData &snapshot_data, size_t time_to_load)
+	{ return pimpl->undo(model, selection, gizmos, plate_list, snapshot_data, time_to_load); }
+bool Stack::redo(Slic3r::Model& model, Slic3r::GUI::GLGizmosManager& gizmos, Slic3r::GUI::PartPlateList& plate_list, size_t time_to_load) { return pimpl->redo(model, gizmos, plate_list, time_to_load); }
 const Selection& Stack::selection_deserialized() const { return pimpl->selection_deserialized(); }
 
 const std::vector<Snapshot>& Stack::snapshots() const { return pimpl->snapshots(); }
@@ -1264,6 +1357,11 @@ size_t Stack::active_snapshot_time() const { return pimpl->active_snapshot_time(
 bool Stack::temp_snapshot_active() const { return pimpl->temp_snapshot_active(); }
 void Stack::mark_current_as_saved() { pimpl->mark_current_as_saved(); }
 bool Stack::project_modified() const { return pimpl->project_modified(); }
+
+bool Stack::has_real_change_from(size_t time) const
+{
+    return pimpl->has_real_change_from(time);
+}
 
 } // namespace UndoRedo
 } // namespace Slic3r

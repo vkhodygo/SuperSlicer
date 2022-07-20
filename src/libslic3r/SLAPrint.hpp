@@ -482,7 +482,9 @@ public:
 
     const SLAPrintStatistics&   print_statistics() const { return m_print_statistics; }
 
-    std::string validate(std::string* warning = nullptr) const override;
+    StringObjectException validate(StringObjectException *                 warning           = nullptr,
+                                   Polygons *                              collison_polygons = nullptr,
+                                   std::vector<std::pair<Polygon, float>> *height_polygons   = nullptr) const override;
 
     // An aggregation of SliceRecord-s from all the print objects for each
     // occupied layer. Slice record levels dont have to match exactly.

@@ -14,23 +14,31 @@ if (TARGET OpenVDB::openvdb)
     set(OpenVDBUtils_SOURCES OpenVDBUtils.cpp OpenVDBUtils.hpp)
 endif()
 
-add_library(libslic3r STATIC
+set(lisbslic3r_sources
+    ArcFitter.cpp
+    ArcFitter.hpp
     pchheader.cpp
     pchheader.hpp
     BoundingBox.cpp
     BoundingBox.hpp
     BridgeDetector.cpp
     BridgeDetector.hpp
+    FaceDetector.cpp
+    FaceDetector.hpp
     Brim.cpp
     Brim.hpp
     BuildVolume.cpp
     BuildVolume.hpp
+    Circle.cpp
+    Circle.hpp
     clipper.cpp
     clipper.hpp
     ClipperUtils.cpp
     ClipperUtils.hpp
     Config.cpp
     Config.hpp
+    CurveAnalyzer.cpp
+    CurveAnalyzer.hpp
     EdgeGrid.cpp
     EdgeGrid.hpp
     ElephantFootCompensation.cpp
@@ -59,6 +67,8 @@ add_library(libslic3r STATIC
     Fill/FillBase.hpp
     Fill/FillConcentric.cpp
     Fill/FillConcentric.hpp
+    Fill/FillConcentricWGapFill.cpp
+    Fill/FillConcentricWGapFill.hpp
     Fill/FillHoneycomb.cpp
     Fill/FillHoneycomb.hpp
     Fill/FillGyroid.cpp
@@ -84,12 +94,16 @@ add_library(libslic3r STATIC
     format.hpp
     Format/3mf.cpp
     Format/3mf.hpp
+    Format/bbs_3mf.cpp
+    Format/bbs_3mf.hpp
     Format/AMF.cpp
     Format/AMF.hpp
     Format/OBJ.cpp
     Format/OBJ.hpp
     Format/objparser.cpp
     Format/objparser.hpp
+    Format/STEP.cpp
+    Format/STEP.hpp
     Format/STL.cpp
     Format/STL.hpp
     Format/SL1.hpp
@@ -108,6 +122,8 @@ add_library(libslic3r STATIC
     GCode/SpiralVase.hpp
     GCode/SeamPlacer.cpp
     GCode/SeamPlacer.hpp
+    GCode/SpeedGenerator.cpp
+    GCode/SpeedGenerator.hpp
     GCode/ToolOrdering.cpp
     GCode/ToolOrdering.hpp
     GCode/WipeTower.cpp
@@ -137,12 +153,13 @@ add_library(libslic3r STATIC
     Geometry/VoronoiOffset.hpp
     Geometry/VoronoiVisualUtils.hpp
     Int128.hpp
+    InternalBridgeDetector.cpp
+    InternalBridgeDetector.hpp
     KDTreeIndirect.hpp
     Layer.cpp
     Layer.hpp
     LayerRegion.cpp
     libslic3r.h
-    "${CMAKE_CURRENT_BINARY_DIR}/libslic3r_version.h"
     Line.cpp
     Line.hpp
     BlacklistedLibraryCheck.cpp
@@ -159,6 +176,8 @@ add_library(libslic3r STATIC
     CustomGCode.hpp
     Arrange.hpp
     Arrange.cpp
+    Orient.hpp
+    Orient.cpp
     MultiPoint.cpp
     MultiPoint.hpp
     MutablePriorityQueue.hpp
@@ -184,6 +203,8 @@ add_library(libslic3r STATIC
     Preset.hpp
     PresetBundle.cpp
     PresetBundle.hpp
+    ProjectTask.cpp
+    ProjectTask.hpp
     AppConfig.cpp
     AppConfig.hpp
     Print.cpp
@@ -215,6 +236,10 @@ add_library(libslic3r STATIC
     SlicingAdaptive.hpp
     SupportMaterial.cpp
     SupportMaterial.hpp
+    TreeSupport.hpp
+    TreeSupport.cpp
+    MinimumSpanningTree.hpp
+    MinimumSpanningTree.cpp
     Surface.cpp
     Surface.hpp
     SurfaceCollection.cpp
@@ -240,6 +265,8 @@ add_library(libslic3r STATIC
     TriangleSelector.cpp
     TriangleSelector.hpp
     MTUtils.hpp
+    VariableWidth.cpp
+    VariableWidth.hpp
     Zipper.hpp
     Zipper.cpp
     MinAreaBoundingBox.hpp
@@ -253,7 +280,6 @@ add_library(libslic3r STATIC
     Optimize/Optimizer.hpp
     Optimize/NLoptOptimizer.hpp
     Optimize/BruteforceOptimizer.hpp
-    ${OpenVDBUtils_SOURCES}
     SLA/Pad.hpp
     SLA/Pad.cpp
     SLA/SupportTreeBuilder.hpp
@@ -290,6 +316,11 @@ add_library(libslic3r STATIC
     SLA/Clustering.cpp
     SLA/ReprojectPointsOnMesh.hpp
 )
+
+add_library(libslic3r STATIC ${lisbslic3r_sources} 
+    "${CMAKE_CURRENT_BINARY_DIR}/libslic3r_version.h"
+    ${OpenVDBUtils_SOURCES})
+source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${lisbslic3r_sources})
 
 if (SLIC3R_STATIC)
     set(CGAL_Boost_USE_STATIC_LIBS ON CACHE BOOL "" FORCE)
@@ -332,6 +363,41 @@ encoding_check(libslic3r)
 target_compile_definitions(libslic3r PUBLIC -DUSE_TBB -DTBB_USE_CAPTURED_EXCEPTION=0)
 target_include_directories(libslic3r PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} PUBLIC ${CMAKE_CURRENT_BINARY_DIR})
 target_include_directories(libslic3r PUBLIC ${EXPAT_INCLUDE_DIRS})
+
+# Find the OCCT and related libraries
+set(OpenCASCADE_DIR "${CMAKE_PREFIX_PATH}/lib/cmake/occt")
+find_package(OpenCASCADE REQUIRED)
+target_include_directories(libslic3r PUBLIC ${OpenCASCADE_INCLUDE_DIR})
+
+set(OCCT_LIBS
+    TKXDESTEP
+    TKSTEP
+    TKSTEP209
+    TKSTEPAttr
+    TKSTEPBase
+    TKXCAF
+    TKXSBase
+    TKVCAF
+    TKCAF
+    TKLCAF
+    TKCDF
+    TKV3d
+    TKService
+    TKMesh
+    TKBO
+    TKPrim
+    TKHLR
+    TKShHealing
+    TKTopAlgo
+    TKGeomAlgo
+    TKBRep
+    TKGeomBase
+    TKG3d
+    TKG2d
+    TKMath
+    TKernel
+)
+
 target_link_libraries(libslic3r
     libnest2d
     admesh
@@ -350,6 +416,7 @@ target_link_libraries(libslic3r
     ${CMAKE_DL_LIBS}
     PNG::PNG
     ZLIB::ZLIB
+    ${OCCT_LIBS}
     )
 
 if (TARGET OpenVDB::openvdb)

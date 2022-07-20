@@ -1,5 +1,9 @@
 #include "SendSystemInfoDialog.hpp"
 
+#if __APPLE__
+#import <IOKit/IOKitLib.h>
+#endif
+
 #include "libslic3r/AppConfig.hpp"
 #include "libslic3r/BlacklistedLibraryCheck.hpp"
 #include "libslic3r/Platform.hpp"
@@ -37,11 +41,11 @@
 #ifdef _WIN32
     #include <windows.h>
     #include <netlistmgr.h>
-    #include <atlbase.h>
+    //BBS: remove atl related logic
+    //#include <atlbase.h>
     #include <Iphlpapi.h>
     #pragma comment(lib, "iphlpapi.lib")
 #elif __APPLE__
-    #import <IOKit/IOKitLib.h>
     #include <CoreFoundation/CoreFoundation.h>
 #else // Linux/BSD
     #include <charconv>
@@ -50,7 +54,7 @@
 namespace Slic3r {
 namespace GUI {
 
-static const std::string SEND_SYSTEM_INFO_DOMAIN = "prusa3d.com";
+static const std::string SEND_SYSTEM_INFO_DOMAIN = "bambu-lab.com";
 static const std::string SEND_SYSTEM_INFO_URL = "https://files." + SEND_SYSTEM_INFO_DOMAIN + "/wp-json/v1/ps";
 
 
@@ -90,7 +94,8 @@ public:
         : wxDialog(parent, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxCAPTION)
     {
         auto* text = new wxStaticText(this, wxID_ANY, message, wxDefaultPosition, wxDefaultSize, wxALIGN_CENTER_HORIZONTAL);
-        auto* btn = new wxButton(this, wxID_CANCEL, _L("Cancel"));
+        //auto* btn = new wxButton(this, wxID_CANCEL, _L("Cancel"));
+        auto* btn = new wxButton(this, wxID_CANCEL, wxEmptyString);
         auto* vsizer = new wxBoxSizer(wxVERTICAL);
         auto *top_sizer = new wxBoxSizer(wxVERTICAL);
         vsizer->Add(text, 1, wxEXPAND);
@@ -111,7 +116,8 @@ class ShowJsonDialog : public wxDialog
 {
 public:
     ShowJsonDialog(wxWindow* parent, const wxString& json, const wxSize& size)
-        : wxDialog(parent, wxID_ANY, _L("Data to send"), wxDefaultPosition, size, wxCAPTION|wxRESIZE_BORDER)
+        //: wxDialog(parent, wxID_ANY, _L("Data to send"), wxDefaultPosition, size, wxCAPTION|wxRESIZE_BORDER)
+        : wxDialog(parent, wxID_ANY, wxEmptyString, wxDefaultPosition, size, wxCAPTION|wxRESIZE_BORDER)
     {
         auto* text = new wxTextCtrl(this, wxID_ANY, json,
                                     wxDefaultPosition, wxDefaultSize,
@@ -119,7 +125,8 @@ public:
         text->SetFont(wxGetApp().code_font());
         text->ShowPosition(0);
 
-        auto* btn = new wxButton(this, wxID_CANCEL, _L("Close"));
+        //auto* btn = new wxButton(this, wxID_CANCEL, _L("Close"));
+        auto* btn = new wxButton(this, wxID_CANCEL, wxEmptyString);
         auto* vsizer = new wxBoxSizer(wxVERTICAL);
         auto *top_sizer = new wxBoxSizer(wxVERTICAL);
         vsizer->Add(text, 1, wxEXPAND);
@@ -134,8 +141,8 @@ public:
 };
 
 
-
-#ifdef _WIN32
+//BBS: remove atl related logic
+/*#ifdef _WIN32
 static bool check_internet_connection_win()
 {
     bool internet = true; // return true if COM object creation fails.
@@ -154,7 +161,7 @@ static bool check_internet_connection_win()
 
     return internet;
 }
-#endif
+#endif*/
 
 
 // Last version where the info was sent / dialog dismissed is saved in appconfig.
@@ -162,7 +169,10 @@ static bool check_internet_connection_win()
 // current version is newer. Only major and minor versions are compared.
 static bool should_dialog_be_shown()
 {
-    std::string last_sent_version = wxGetApp().app_config->get("version_system_info_sent");
+    //BBS TODO remember to read last version
+    //std::string last_sent_version = wxGetApp().app_config->get("version_last");
+    std::string last_sent_version = SLIC3R_VERSION;
+
     Semver semver_current(SLIC3R_VERSION);
     Semver semver_last_sent;
     if (! last_sent_version.empty())
@@ -183,15 +193,16 @@ static bool should_dialog_be_shown()
         return false;
 
     // We might want to check that the internet connection is ready so we don't open the dialog
-    // if it cannot really send any data. Using a dummy HTTP GET request led to
-    // https://forum.prusaprinters.org/forum/prusaslicer/prusaslicer-2-4-0-beta1-is-out/#post-518488.
+    // if it cannot really send any data. Using a dummy HTTP GET request led
     // It might also trigger security softwares, which would look bad and would lead to questions
     // about what PS is doing. We better use some less intrusive way of checking the connection.
 
     // As of now, this is only implemented on Win. The other platforms do not check beforehand.
 
 #ifdef _WIN32
-    return check_internet_connection_win();
+    //BBS: remove atl related logic
+    //return check_internet_connection_win();
+    return true;
 #else
     return true;
 #endif
@@ -199,11 +210,11 @@ static bool should_dialog_be_shown()
 
 
 
-// Following function saves current PrusaSlicer version into app config.
+// Following function saves current BambuStudio version into app config.
 // It will be later used to decide whether to open the dialog or not.
 static void save_version()
 {
-    wxGetApp().app_config->set("version_system_info_sent", std::string(SLIC3R_VERSION));
+    //BBS sentwxGetApp().app_config->set("version_last", std::string(SLIC3R_VERSION));
 }
 
 
@@ -287,7 +298,7 @@ static std::string get_unique_id()
     if (GetAdaptersInfo(AdapterInfo, &dwBufLen) == ERROR_BUFFER_OVERFLOW) {
         free(AdapterInfo);
         AdapterInfo = (IP_ADAPTER_INFO*)malloc(dwBufLen);
-    }    
+    }
     if (GetAdaptersInfo(AdapterInfo, &dwBufLen) == NO_ERROR) {
         const IP_ADAPTER_INFO* pAdapterInfo = AdapterInfo;
         std::vector<std::vector<unsigned char>> macs;
@@ -391,7 +402,7 @@ static std::string generate_system_info_json()
     namespace pt = boost::property_tree;
 
     pt::ptree data_node;
-    data_node.put("PrusaSlicerVersion", SLIC3R_VERSION);
+    data_node.put("BambuStudioVersion", SLIC3R_VERSION);
     data_node.put("BuildID", SLIC3R_BUILD_ID);
     data_node.put("UniqueID", unique_id);
     data_node.put("Platform", platform_to_string(platform()));
@@ -426,7 +437,7 @@ static std::string generate_system_info_json()
     );
 #endif // __WXGTK__
     data_node.put("SystemLanguage", sys_language);
-    data_node.put("TranslationLanguage: ", wxGetApp().app_config->get("translation_language"));
+    data_node.put("TranslationLanguage: ", wxGetApp().app_config->get("language"));
 
 
     pt::ptree hw_node;
@@ -547,18 +558,27 @@ static std::string generate_system_info_json()
 
 SendSystemInfoDialog::SendSystemInfoDialog(wxWindow* parent)
     : m_system_info_json{generate_system_info_json()},
-    GUI::DPIDialog(parent, wxID_ANY, _L("Send system info"), wxDefaultPosition, wxDefaultSize,
-           wxDEFAULT_DIALOG_STYLE)
+    /*GUI::DPIDialog(parent, wxID_ANY, _L("Send system info"), wxDefaultPosition, wxDefaultSize,
+           wxDEFAULT_DIALOG_STYLE)*/
+    GUI::DPIDialog(parent, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize,
+        wxDEFAULT_DIALOG_STYLE)
 {
     const int em = GUI::wxGetApp().em_unit();
 
-    // Get current PrusaSliver version info.
+    // Get current BambuSliver version info.
     std::string app_name;
     {
         Semver semver(SLIC3R_VERSION);
-        bool is_alpha = semver.prerelease() && std::string{semver.prerelease()}.find("alpha") != std::string::npos;
-        bool is_beta = semver.prerelease() && std::string{semver.prerelease()}.find("beta") != std::string::npos;
-        app_name = std::string(SLIC3R_APP_NAME) + " " + std::to_string(semver.maj())
+        bool is_alpha = false;
+        if (semver.prerelease()) {
+            is_alpha = std::string{ semver.prerelease() }.find("alpha") != std::string::npos;
+        }
+
+        bool is_beta = false;
+        if (semver.prerelease()) {
+            is_beta = std::string{ semver.prerelease() }.find("beta") != std::string::npos;
+        }
+        app_name = std::string(SLIC3R_APP_FULL_NAME) + " " + std::to_string(semver.maj())
                                + "." + std::to_string(semver.min()) + " "
                                + (is_alpha ? "Alpha" : is_beta ? "Beta" : "");
     }
@@ -578,28 +598,17 @@ SendSystemInfoDialog::SendSystemInfoDialog(wxWindow* parent)
     auto *topSizer = new wxBoxSizer(wxVERTICAL);
     auto *vsizer = new wxBoxSizer(wxVERTICAL);
 
-    wxString text0 = GUI::format_wxstr(_L("This is the first time you are running %1%. We would like to "
-           "ask you to send some of your system information to us. This will only "
-           "happen once and we will not ask you to do this again (only after you "
-           "upgrade to the next version)."), app_name );
-    wxString text1 = _L("If we know your hardware, operating system, etc., it will greatly help us "
-        "in development and prioritization, because we will be able to focus our effort more efficiently "
-        "and spend time on features that are needed the most.");
-    wxString label2 = _L("Is it safe?");
-    wxString text2 = GUI::format_wxstr(
-        _L("We do not send any personal information nor anything that would allow us "
-           "to identify you later. To detect duplicate entries, a unique number derived "
-           "from your system is sent, but the source information cannot be reconstructed. "
-           "Apart from that, only general data about your OS, hardware and OpenGL "
-           "installation are sent. PrusaSlicer is open source, if you want to "
-           "inspect the code actually performing the communication, see %1%."),
-           std::string("<i>") + filename + "</i>");
+    wxString text0  = GUI::format_wxstr(wxEmptyString, app_name);
+    wxString text1 = wxEmptyString;
+    wxString label2 = wxEmptyString;
+
+     wxString text2 = GUI::format_wxstr(wxEmptyString, std::string("<i>") + filename + "</i>");
 
     auto* html_window = new wxHtmlWindow(this, wxID_ANY, wxDefaultPosition, wxSize(70*em, 34*em), wxHW_SCROLLBAR_NEVER);
     wxString html = GUI::format_wxstr(
             "<html><body bgcolor=%1%><font color=%2%>"
             "<table><tr><td>"
-            "<img src = \"" + resources_dir() + "/icons/PrusaSlicer_192px.png\" />"
+            "<img src = \"" + resources_dir() + "/images/BambuStudio_192px.png\" />"
             "</td><td align=\"left\">"
             + text0 + "<br / ><br / >"
             + text1 + "<br /><br />"
@@ -611,11 +620,17 @@ SendSystemInfoDialog::SendSystemInfoDialog(wxWindow* parent)
 
     vsizer->Add(html_window, 1, wxEXPAND);
 
-    m_btn_show_data = new wxButton(this, wxID_ANY, _L("Show verbatim data that will be sent"));
+    //m_btn_show_data = new wxButton(this, wxID_ANY, _L("Show verbatim data that will be sent"));
+    m_btn_show_data = new wxButton(this, wxID_ANY, wxEmptyString);
 
-    m_btn_ask_later = new wxButton(this, wxID_ANY, _L("Ask me next time"));
-    m_btn_dont_send = new wxButton(this, wxID_ANY, _L("Do not send anything"));
-    m_btn_send = new wxButton(this, wxID_ANY, _L("Send system info"));
+    //m_btn_ask_later = new wxButton(this, wxID_ANY, _L("Ask me next time"));
+    m_btn_ask_later = new wxButton(this, wxID_ANY, wxEmptyString);
+
+    //m_btn_dont_send = new wxButton(this, wxID_ANY, _L("Do not send anything"));
+    m_btn_dont_send = new wxButton(this, wxID_ANY, wxEmptyString);
+
+    //m_btn_send = new wxButton(this, wxID_ANY, _L("Send system info"));
+    m_btn_send = new wxButton(this, wxID_ANY, wxEmptyString);
 
     auto* hsizer = new wxBoxSizer(wxHORIZONTAL);
     hsizer->Add(m_btn_ask_later);
@@ -695,29 +710,34 @@ bool SendSystemInfoDialog::send_info(wxString& message)
     } result; // No synchronization needed, UI thread reads only after worker is joined.
 
     auto send = [&job_done, &result](const std::string& data) {
-        Http http = Http::post(SEND_SYSTEM_INFO_URL);
+        Slic3r::Http http = Slic3r::Http::post(SEND_SYSTEM_INFO_URL);
         http.header("Content-Type", "application/json")
             .timeout_max(6) // seconds
             .set_post_body(data)
             .on_complete([&result](std::string body, unsigned status) {
-                result = { Result::Success, _L("System info sent successfully. Thank you.") };
+                //result = { Result::Success, _L("System info sent successfully. Thank you.") };
+                result = {Result::Success, wxEmptyString};
             })
             .on_error([&result](std::string body, std::string error, unsigned status) {
-                result = { Result::Error, _L("Sending system info failed!") };
-                BOOST_LOG_TRIVIAL(error) << "Sending system info failed! STATUS: " << status;
+                //result = { Result::Error, _L("Sending system info failed!") };
+                result = {Result::Error, wxEmptyString};
+                //BOOST_LOG_TRIVIAL(error) << "Sending system info failed! STATUS: " << status;
+                BOOST_LOG_TRIVIAL(error) << "" << status;
             })
-            .on_progress([&job_done, &result](Http::Progress, bool &cancel) {
+            .on_progress([&job_done, &result](Slic3r::Http::Progress, bool &cancel) {
                 if (job_done) // UI thread wants us to cancel.
                     cancel = true;
                 if (cancel)
-                    result = { Result::Cancelled, _L("Sending system info was cancelled.") };
+                    //result = { Result::Cancelled, _L("Sending system info was cancelled.") };
+                    result = {Result::Cancelled, wxEmptyString};
             })
             .perform_sync();
         job_done = true; // So that the dialog knows we are done.
     };
 
     std::thread sending_thread(send, m_system_info_json);
-    SendSystemInfoProgressDialog dlg(this, _L("Sending system info..."));
+    //SendSystemInfoProgressDialog dlg(this, _L("Sending system info..."));
+    SendSystemInfoProgressDialog dlg(this, wxEmptyString);
     wxTimer timer(&dlg); // Periodically check the status of the other thread, close dialog when done.
     dlg.Bind(wxEVT_TIMER, [&dlg, &job_done](wxTimerEvent&){ if (job_done) dlg.EndModal(0); });
     timer.Start(50);

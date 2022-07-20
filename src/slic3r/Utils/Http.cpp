@@ -18,16 +18,9 @@
 #include <openssl/x509.h>
 #endif
 
-#include <libslic3r/libslic3r.h>
-#include <libslic3r/Utils.hpp>
-#include <slic3r/GUI/I18N.hpp>
-#include <slic3r/GUI/format.hpp>
-
 namespace fs = boost::filesystem;
 
-
 namespace Slic3r {
-
 
 // Private
 
@@ -70,27 +63,17 @@ struct CurlGlobalInit
             }
 
             if (!bundle)
-                message = _u8L("Could not detect system SSL certificate store. "
-                               "PrusaSlicer will be unable to establish secure "
-                               "network connections.");
+                message = "Unable to get system certificate.";
             else
-                message = Slic3r::GUI::format(
-					_L("PrusaSlicer detected system SSL certificate store in: %1%"),
-                    bundle);
+                message = (boost::format("use system SSL certificate: %1%") % bundle).str();
 
-            message += "\n" + Slic3r::GUI::format(
-				_L("To specify the system certificate store manually, please "
-                   "set the %1% environment variable to the correct CA bundle "
-                   "and restart the application."),
-                SSL_CA_FILE);
+             message += "\n" + (boost::format("To manually specify the system certificate store, "
+                                                   "set the %1% environment variable to the correct CA and restart the application") % SSL_CA_FILE).str();
         }
-
 #endif // OPENSSL_CERT_OVERRIDE
 
         if (CURLcode ec = ::curl_global_init(CURL_GLOBAL_DEFAULT)) {
-            message += _u8L("CURL init has failed. PrusaSlicer will be unable to establish "
-                            "network connections. See logs for additional details.");
-
+            message += "CURL initialization failed. See the log for additional details.";
             BOOST_LOG_TRIVIAL(error) << ::curl_easy_strerror(ec);
         }
     }
@@ -105,12 +88,13 @@ struct Http::priv
 	enum {
 		DEFAULT_TIMEOUT_CONNECT = 10,
         DEFAULT_TIMEOUT_MAX = 0,
-		DEFAULT_SIZE_LIMIT = 5 * 1024 * 1024,
+		DEFAULT_SIZE_LIMIT = 1024 * 1024 * 1024,
 	};
 
 	::CURL *curl;
 	::curl_httppost *form;
 	::curl_httppost *form_end;
+	::curl_mime* mime;
 	::curl_slist *headerlist;
 	// Used for reading the body
 	std::string buffer;
@@ -119,6 +103,7 @@ struct Http::priv
 	std::deque<fs::ifstream> form_files;
 	std::string postfields;
 	std::string error_buffer;    // Used for CURLOPT_ERRORBUFFER
+    std::string headers;
 	size_t limit;
 	bool cancel;
     std::unique_ptr<fs::ifstream> putFile;
@@ -128,6 +113,7 @@ struct Http::priv
 	Http::ErrorFn errorfn;
 	Http::ProgressFn progressfn;
 	Http::IPResolveFn ipresolvefn;
+	Http::HeaderCallbackFn headerfn;
 
 	priv(const std::string &url);
 	~priv();
@@ -137,13 +123,18 @@ struct Http::priv
 	static int xfercb(void *userp, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow);
 	static int xfercb_legacy(void *userp, double dltotal, double dlnow, double ultotal, double ulnow);
 	static size_t form_file_read_cb(char *buffer, size_t size, size_t nitems, void *userp);
+    static size_t headers_cb(char *buffer, size_t size, size_t nitems, void *userp);
 
 	void set_timeout_connect(long timeout);
     void set_timeout_max(long timeout);
 	void form_add_file(const char *name, const fs::path &path, const char* filename);
+	/* mime */
+	void mime_form_add_text(const char* name, const char* value);
+	void mime_form_add_file(const char* name, const char* path);
 	void set_post_body(const fs::path &path);
 	void set_post_body(const std::string &body);
 	void set_put_body(const fs::path &path);
+	void set_del_body(const std::string& body);
 
 	std::string curl_error(CURLcode curlcode);
 	std::string body_size_error();
@@ -154,6 +145,7 @@ Http::priv::priv(const std::string &url)
 	: curl(::curl_easy_init())
 	, form(nullptr)
 	, form_end(nullptr)
+	, mime(nullptr)
 	, headerlist(nullptr)
 	, error_buffer(CURL_ERROR_SIZE + 1, '\0')
 	, limit(0)
@@ -170,22 +162,23 @@ Http::priv::priv(const std::string &url)
 	::curl_easy_setopt(curl, CURLOPT_URL, url.c_str());   // curl makes a copy internally
 	::curl_easy_setopt(curl, CURLOPT_USERAGENT, SLIC3R_APP_NAME "/" SLIC3R_VERSION);
 	::curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, &error_buffer.front());
+
+	::curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+	::curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
 }
 
 Http::priv::~priv()
 {
 	::curl_easy_cleanup(curl);
 	::curl_formfree(form);
+	::curl_mime_free(mime);
 	::curl_slist_free_all(headerlist);
 }
 
 bool Http::priv::ca_file_supported(::CURL *curl)
 {
-#ifdef _WIN32
-	bool res = false;
-#else
+	//BBS support set ca file by default
 	bool res = true;
-#endif
 
 	if (curl == nullptr) { return res; }
 
@@ -225,7 +218,11 @@ int Http::priv::xfercb(void *userp, curl_off_t dltotal, curl_off_t dlnow, curl_o
 	bool cb_cancel = false;
 
 	if (self->progressfn) {
-		Progress progress(dltotal, dlnow, ultotal, ulnow);
+		double speed;
+        curl_easy_getinfo(self->curl, CURLINFO_SPEED_UPLOAD, &speed);
+		if (speed > 0.01)
+			speed = speed;
+		Progress progress(dltotal, dlnow, ultotal, ulnow, speed);
 		self->progressfn(progress, cb_cancel);
 	}
 
@@ -250,6 +247,17 @@ size_t Http::priv::form_file_read_cb(char *buffer, size_t size, size_t nitems, v
 	}
 
 	return stream->gcount();
+}
+
+size_t Http::priv::headers_cb(char *buffer, size_t size, size_t nitems, void *userp)
+{
+	auto self = static_cast<priv*>(userp);
+
+	if (self->headerfn) {
+        self->headers.append(buffer, nitems * size);
+		self->headerfn(self->headers);
+	}
+	return nitems * size;
 }
 
 void Http::priv::set_timeout_connect(long timeout)
@@ -289,6 +297,34 @@ void Http::priv::form_add_file(const char *name, const fs::path &path, const cha
 	}
 }
 
+void Http::priv::mime_form_add_text(const char* name, const char* value)
+{
+	if (!mime) {
+		mime = curl_mime_init(curl);
+	}
+
+	curl_mimepart *part;
+	part = curl_mime_addpart(mime);
+	curl_mime_name(part, name);
+	curl_mime_type(part, "multipart/form-data");
+	curl_mime_data(part, value, CURL_ZERO_TERMINATED);
+}
+
+void Http::priv::mime_form_add_file(const char* name, const char* path)
+{
+	if (!mime) {
+		mime = curl_mime_init(curl);
+	}
+
+	curl_mimepart* part;
+	part = curl_mime_addpart(mime);
+	curl_mime_name(part, "file");
+	curl_mime_type(part, "multipart/form-data");
+	curl_mime_filedata(part, path);
+	// BBS specify filename after filedata
+	curl_mime_filename(part, name);
+}
+
 //FIXME may throw! Is the caller aware of it?
 void Http::priv::set_post_body(const fs::path &path)
 {
@@ -307,15 +343,21 @@ void Http::priv::set_put_body(const fs::path &path)
 	boost::system::error_code ec;
 	boost::uintmax_t filesize = file_size(path, ec);
 	if (!ec) {
-        putFile = std::make_unique<fs::ifstream>(path);
-        ::curl_easy_setopt(curl, CURLOPT_READDATA, (void *) (putFile.get()));
+		putFile = std::make_unique<fs::ifstream>(path, std::ios_base::binary |std::ios_base::in);
+		::curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);
+		::curl_easy_setopt(curl, CURLOPT_READDATA, (void *) (putFile.get()));
 		::curl_easy_setopt(curl, CURLOPT_INFILESIZE, filesize);
 	}
 }
 
+void Http::priv::set_del_body(const std::string& body)
+{
+	postfields = body;
+}
+
 std::string Http::priv::curl_error(CURLcode curlcode)
 {
-	return (boost::format("%1%:\n%2%\n[Error %3%]")
+	return (boost::format("curl:%1%:\n%2%\n[Error %3%]")
 		% ::curl_easy_strerror(curlcode)
 		% error_buffer.c_str()
 		% curlcode
@@ -334,6 +376,9 @@ void Http::priv::http_perform()
 	::curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, writecb);
 	::curl_easy_setopt(curl, CURLOPT_WRITEDATA, static_cast<void*>(this));
 	::curl_easy_setopt(curl, CURLOPT_READFUNCTION, form_file_read_cb);
+	//BBS set header functions
+	::curl_easy_setopt(curl, CURLOPT_HEADERDATA, static_cast<void *>(this));
+	::curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, headers_cb);
 
 	::curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
 #if LIBCURL_VERSION_MAJOR >= 7 && LIBCURL_VERSION_MINOR >= 32
@@ -347,7 +392,7 @@ void Http::priv::http_perform()
 	::curl_easy_setopt(curl, CURLOPT_PROGRESSDATA, static_cast<void*>(this));
 #endif
 
-	::curl_easy_setopt(curl, CURLOPT_VERBOSE, get_logging_level() >= 5);
+	::curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
 
 	if (headerlist != nullptr) {
 		::curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headerlist);
@@ -355,6 +400,10 @@ void Http::priv::http_perform()
 
 	if (form != nullptr) {
 		::curl_easy_setopt(curl, CURLOPT_HTTPPOST, form);
+	}
+
+	if (mime != nullptr) {
+		::curl_easy_setopt(curl, CURLOPT_MIMEPOST, mime);
 	}
 
 	if (!postfields.empty()) {
@@ -387,9 +436,8 @@ void Http::priv::http_perform()
 		long http_status = 0;
 		::curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_status);
 
-		if (http_status >= 400) {
-			if (errorfn) { errorfn(std::move(buffer), std::string(), http_status); }
-		} else {
+		//BBS check success http status code
+		if (http_status >= 200 && http_status < 300) {
 			if (completefn) { completefn(std::move(buffer), http_status); }
 			if (ipresolvefn) {
 				char* ct;
@@ -399,10 +447,17 @@ void Http::priv::http_perform()
 				}
 			}
 		}
+		//BBS check error http status code
+		else if (http_status >= 400) {
+			if (errorfn) { errorfn(std::move(buffer), std::string(), http_status); }
+		}
 	}
 }
 
-Http::Http(const std::string &url) : p(new priv(url)) {}
+Http::Http(const std::string &url) : p(new priv(url))
+{
+	;
+}
 
 
 // Public
@@ -489,6 +544,7 @@ Http& Http::ca_file(const std::string &name)
 	return *this;
 }
 
+
 Http& Http::form_add(const std::string &name, const std::string &contents)
 {
 	if (p) {
@@ -508,6 +564,26 @@ Http& Http::form_add_file(const std::string &name, const fs::path &path)
 	return *this;
 }
 
+
+Http& Http::mime_form_add_text(std::string &name, std::string &value)
+{
+	if (p) { p->mime_form_add_text(name.c_str(), value.c_str()); }
+	return *this;
+}
+
+Http& Http::mime_form_add_file(std::string &name, const char* path)
+{
+	if (p) { p->mime_form_add_file(name.c_str(), path); }
+	return *this;
+}
+
+
+Http& Http::form_add_file(const std::wstring& name, const fs::path& path)
+{
+	if (p) { p->form_add_file((char*)name.c_str(), path.c_str(), nullptr); }
+	return *this;
+}
+
 Http& Http::form_add_file(const std::string &name, const fs::path &path, const std::string &filename)
 {
 	if (p) { p->form_add_file(name.c_str(), path.c_str(), filename.c_str()); }
@@ -519,9 +595,12 @@ Http& Http::form_add_file(const std::string &name, const fs::path &path, const s
 // This option is only supported for Schannel (the native Windows SSL library).
 Http& Http::ssl_revoke_best_effort(bool set)
 {
+	// BBS
+#if 0
 	if(p && set){
 		::curl_easy_setopt(p->curl, CURLOPT_SSL_OPTIONS, CURLSSLOPT_REVOKE_BEST_EFFORT);
 	}
+#endif
 	return *this;
 }
 #endif // WIN32
@@ -541,6 +620,12 @@ Http& Http::set_post_body(const std::string &body)
 Http& Http::set_put_body(const fs::path &path)
 {
 	if (p) { p->set_put_body(path);}
+	return *this;
+}
+
+Http& Http::set_del_body(const std::string &body)
+{
+	if (p) { p->set_del_body(body); }
 	return *this;
 }
 
@@ -565,6 +650,12 @@ Http& Http::on_progress(ProgressFn fn)
 Http& Http::on_ip_resolve(IPResolveFn fn)
 {
 	if (p) { p->ipresolvefn = std::move(fn); }
+	return *this;
+}
+
+Http &Http::on_header_callback(HeaderCallbackFn fn)
+{
+	if (p) { p->headerfn = std::move(fn); }
 	return *this;
 }
 
@@ -611,6 +702,27 @@ Http Http::put(std::string url)
 	return http;
 }
 
+Http Http::put2(std::string url)
+{
+	Http http{ std::move(url) };
+	curl_easy_setopt(http.p->curl, CURLOPT_CUSTOMREQUEST, "PUT");
+	return http;
+}
+
+Http Http::patch(std::string url)
+{
+	Http http{ std::move(url) };
+	curl_easy_setopt(http.p->curl, CURLOPT_CUSTOMREQUEST, "PATCH");
+	return http;
+}
+
+Http Http::del(std::string url)
+{
+	Http http{ std::move(url) };
+	curl_easy_setopt(http.p->curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+	return http;
+}
+
 bool Http::ca_file_supported()
 {
 	::CURL *curl = ::curl_easy_init();
@@ -651,6 +763,30 @@ std::string Http::url_encode(const std::string &str)
 	::curl_easy_cleanup(curl);
 
 	return encoded;
+}
+
+std::string Http::url_decode(const std::string &str)
+{
+    ::CURL *curl = ::curl_easy_init();
+    if (curl == nullptr) { return str; }
+    int outlen = 0;
+    char *ce = ::curl_easy_unescape(curl, str.c_str(), str.length(), &outlen);
+    std::string dencoded = std::string(ce, outlen);
+
+    ::curl_free(ce);
+    ::curl_easy_cleanup(curl);
+
+    return dencoded;
+}
+
+std::string Http::get_filename_from_url(const std::string &url)
+{
+    int end_pos = url.find_first_of('?');
+	if (end_pos <= 0) return "";
+	std::string path_url = url.substr(0, end_pos);
+	int start_pos = path_url.find_last_of("/");
+	if (start_pos < 0) return "";
+	return path_url.substr(start_pos + 1, path_url.length() - start_pos - 1);
 }
 
 std::ostream& operator<<(std::ostream &os, const Http::Progress &progress)

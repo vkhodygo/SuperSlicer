@@ -2,23 +2,34 @@
 #include "GLGizmoMove.hpp"
 #include "slic3r/GUI/GLCanvas3D.hpp"
 #include "slic3r/GUI/GUI_App.hpp"
+//BBS: GUI refactor
+#include "slic3r/GUI/Plater.hpp"
+#include "libslic3r/AppConfig.hpp"
+
 
 #include <GL/glew.h>
 
-#include <wx/utils.h> 
+#include <wx/utils.h>
 
 namespace Slic3r {
 namespace GUI {
 
+#if ENABLE_FIXED_GRABBER
+const double GLGizmoMove3D::Offset = 50.0;
+#else
 const double GLGizmoMove3D::Offset = 10.0;
+#endif
 
-GLGizmoMove3D::GLGizmoMove3D(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id)
+//BBS: GUI refactor: add obj manipulation
+GLGizmoMove3D::GLGizmoMove3D(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id, GizmoObjectManipulation* obj_manipulation)
     : GLGizmoBase(parent, icon_filename, sprite_id)
     , m_displacement(Vec3d::Zero())
     , m_snap_step(1.0)
     , m_starting_drag_position(Vec3d::Zero())
     , m_starting_box_center(Vec3d::Zero())
     , m_starting_box_bottom_center(Vec3d::Zero())
+    //BBS: GUI refactor: add obj manipulation
+    , m_object_manipulation(obj_manipulation)
 {
     m_vbo_cone.init_from(its_make_cone(1., 1., 2*PI/36));
 }
@@ -45,7 +56,7 @@ bool GLGizmoMove3D::on_init()
         m_grabbers.push_back(Grabber());
     }
 
-    m_shortcut_key = WXK_CONTROL_M;
+    m_shortcut_key = WXK_NONE;
 
     return true;
 }
@@ -96,7 +107,21 @@ void GLGizmoMove3D::on_render()
 
     const BoundingBoxf3& box = selection.get_bounding_box();
     const Vec3d& center = box.center();
+    float space_size = 20.f *INV_ZOOM;
 
+#if ENABLE_FIXED_GRABBER
+    // x axis
+    m_grabbers[0].center = { box.max.x() + space_size, center.y(), center.z() };
+    // y axis
+    m_grabbers[1].center = { center.x(), box.max.y() + space_size, center.z() };
+    // z axis
+    m_grabbers[2].center = { center.x(), center.y(), box.max.z() + space_size };
+
+    for (int i = 0; i < 3; ++i) {
+        m_grabbers[i].color       = AXES_COLOR[i];
+        m_grabbers[i].hover_color = AXES_HOVER_COLOR[i];
+    }
+#else
     // x axis
     m_grabbers[0].center = { box.max.x() + Offset, center.y(), center.z() };
     m_grabbers[0].color = AXES_COLOR[0];
@@ -108,46 +133,29 @@ void GLGizmoMove3D::on_render()
     // z axis
     m_grabbers[2].center = { center.x(), center.y(), box.max.z() + Offset };
     m_grabbers[2].color = AXES_COLOR[2];
+#endif
 
     glsafe(::glLineWidth((m_hover_id != -1) ? 2.0f : 1.5f));
 
-    if (m_hover_id == -1) {
-        // draw axes
-        for (unsigned int i = 0; i < 3; ++i) {
-            if (m_grabbers[i].enabled) {
-                glsafe(::glColor4fv(AXES_COLOR[i].data()));
-                ::glBegin(GL_LINES);
-                ::glVertex3dv(center.data());
-                ::glVertex3dv(m_grabbers[i].center.data());
-                glsafe(::glEnd());
-            }
-        }
-
-        // draw grabbers
-        render_grabbers(box);
-        for (unsigned int i = 0; i < 3; ++i) {
-            if (m_grabbers[i].enabled)
-                render_grabber_extension((Axis)i, box, false);
-        }
+    // draw grabbers
+    for (unsigned int i = 0; i < 3; ++i) {
+        if (m_grabbers[i].enabled) render_grabber_extension((Axis) i, box, false);
     }
-    else {
-        // draw axis
-        glsafe(::glColor4fv(AXES_COLOR[m_hover_id].data()));
-        ::glBegin(GL_LINES);
-        ::glVertex3dv(center.data());
-        ::glVertex3dv(m_grabbers[m_hover_id].center.data());
-        glsafe(::glEnd());
 
-        GLShaderProgram* shader = wxGetApp().get_shader("gouraud_light");
-        if (shader != nullptr) {
-            shader->start_using();
-            shader->set_uniform("emission_factor", 0.1f);
-            // draw grabber
-            float mean_size = (float)((box.size().x() + box.size().y() + box.size().z()) / 3.0);
-            m_grabbers[m_hover_id].render(true, mean_size);
-            shader->stop_using();
+    // draw axes line
+    // draw axes
+    for (unsigned int i = 0; i < 3; ++i) {
+        if (m_grabbers[i].enabled) {
+            glsafe(::glColor4fv(AXES_COLOR[i].data()));
+            glLineStipple(1, 0x0FFF);
+            glEnable(GL_LINE_STIPPLE);
+            ::glBegin(GL_LINES);
+            ::glVertex3dv(center.data());
+            // use extension center
+            ::glVertex3dv(m_grabbers[i].center.data());
+            glsafe(::glEnd());
+            glDisable(GL_LINE_STIPPLE);
         }
-        render_grabber_extension((Axis)m_hover_id, box, false);
     }
 }
 
@@ -156,11 +164,29 @@ void GLGizmoMove3D::on_render_for_picking()
     glsafe(::glDisable(GL_DEPTH_TEST));
 
     const BoundingBoxf3& box = m_parent.get_selection().get_bounding_box();
-    render_grabbers_for_picking(box);
+    //BBS donot render base grabber for picking
+    //render_grabbers_for_picking(box);
+
+    //get picking colors only
+    for (unsigned int i = 0; i < (unsigned int) m_grabbers.size(); ++i) {
+        if (m_grabbers[i].enabled) {
+            std::array<float, 4> color = picking_color_component(i);
+            m_grabbers[i].color        = color;
+        }
+    }
+
     render_grabber_extension(X, box, true);
     render_grabber_extension(Y, box, true);
     render_grabber_extension(Z, box, true);
 }
+
+//BBS: add input window for move
+void GLGizmoMove3D::on_render_input_window(float x, float y, float bottom_limit)
+{
+    if (m_object_manipulation)
+        m_object_manipulation->do_render_move_window(m_imgui, "Move", x, y, bottom_limit);
+}
+
 
 double GLGizmoMove3D::calc_projection(const UpdateData& data) const
 {
@@ -190,15 +216,19 @@ double GLGizmoMove3D::calc_projection(const UpdateData& data) const
 
 void GLGizmoMove3D::render_grabber_extension(Axis axis, const BoundingBoxf3& box, bool picking) const
 {
+#if ENABLE_FIXED_GRABBER
+    float mean_size = (float)(GLGizmoBase::Grabber::FixedGrabberSize);
+#else
     float mean_size = (float)((box.size().x() + box.size().y() + box.size().z()) / 3.0);
-    double size = m_dragging ? (double)m_grabbers[axis].get_dragging_half_size(mean_size) : (double)m_grabbers[axis].get_half_size(mean_size);
+#endif
+
+    double size = 0.75 * GLGizmoBase::Grabber::FixedGrabberSize * GLGizmoBase::INV_ZOOM;
 
     std::array<float, 4> color = m_grabbers[axis].color;
     if (!picking && m_hover_id != -1) {
-        color[0] = 1.0f - color[0];
-        color[1] = 1.0f - color[1];
-        color[2] = 1.0f - color[2];
-        color[3] = color[3];
+        if (m_hover_id == axis) {
+            color = m_grabbers[axis].hover_color;
+        }
     }
 
     GLShaderProgram* shader = wxGetApp().get_shader("gouraud_light");
@@ -218,8 +248,8 @@ void GLGizmoMove3D::render_grabber_extension(Axis axis, const BoundingBoxf3& box
     else if (axis == Y)
         glsafe(::glRotated(-90.0, 1.0, 0.0, 0.0));
 
-    glsafe(::glTranslated(0.0, 0.0, 2.0 * size));
-    glsafe(::glScaled(0.75 * size, 0.75 * size, 3.0 * size));
+    //glsafe(::glTranslated(0.0, 0.0, 2.0 * size));
+    glsafe(::glScaled(0.75 * size, 0.75 * size, 2.0 * size));
     m_vbo_cone.render();
     glsafe(::glPopMatrix());
 

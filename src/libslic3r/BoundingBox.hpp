@@ -5,6 +5,7 @@
 #include "Exception.hpp"
 #include "Point.hpp"
 #include "Polygon.hpp"
+#include <ostream>
 
 namespace Slic3r {
 
@@ -52,8 +53,9 @@ public:
     void scale(double factor);
     PointClass size() const;
     double radius() const;
+    double area() const { return double(this->max(0) - this->min(0)) * (this->max(1) - this->min(1));    } // BBS
     void translate(coordf_t x, coordf_t y) { assert(this->defined); PointClass v(x, y); this->min += v; this->max += v; }
-    void translate(const Vec2d &v) { this->min += v; this->max += v; }
+    void translate(const Vec2d& v0) { PointClass v(v0.x(), v0.y()); this->min += v; this->max += v; }
     void offset(coordf_t delta);
     BoundingBoxBase<PointClass> inflated(coordf_t delta) const throw() { BoundingBoxBase<PointClass> out(*this); out.offset(delta); return out; }
     PointClass center() const;
@@ -70,6 +72,11 @@ public:
     }
     bool operator==(const BoundingBoxBase<PointClass> &rhs) { return this->min == rhs.min && this->max == rhs.max; }
     bool operator!=(const BoundingBoxBase<PointClass> &rhs) { return ! (*this == rhs); }
+    friend std::ostream &operator<<(std::ostream &os, const BoundingBoxBase &bbox)
+    {
+        os << "[" << bbox.max(0) - bbox.min(0) << " x " << bbox.max(1) - bbox.min(1) << "] from (" << bbox.min(0) << ", " << bbox.min(1) << ")";
+        return os;
+    }
 };
 
 template <class PointClass>
@@ -103,6 +110,7 @@ public:
         : BoundingBox3Base(points.begin(), points.end())
     {}
 
+    Polygon polygon(bool is_scaled = false) const;//BBS: 2D footprint polygon
     void merge(const PointClass &point);
     void merge(const std::vector<PointClass> &points);
     void merge(const BoundingBox3Base<PointClass> &bb);

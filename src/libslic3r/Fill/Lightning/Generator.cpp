@@ -32,13 +32,13 @@ Generator::Generator(const PrintObject &print_object)
     const PrintRegionConfig   &region_config        = print_object.shared_regions()->all_regions.front()->config();
     const std::vector<double> &nozzle_diameters     = print_config.nozzle_diameter.values;
     double                     max_nozzle_diameter  = *std::max_element(nozzle_diameters.begin(), nozzle_diameters.end());
-//    const int                  infill_extruder      = region_config.infill_extruder.value;
+//    const int                  sparse_infill_filament      = region_config.sparse_infill_filament.value;
     const double               default_infill_extrusion_width = Flow::auto_extrusion_width(FlowRole::frInfill, float(max_nozzle_diameter));
     // Note: There's not going to be a layer below the first one, so the 'initial layer height' doesn't have to be taken into account.
     const double               layer_thickness      = object_config.layer_height;
 
-    m_infill_extrusion_width = scaled<float>(region_config.infill_extrusion_width.percent ? default_infill_extrusion_width * 0.01 * region_config.infill_extrusion_width : region_config.infill_extrusion_width);
-    m_supporting_radius = scaled<coord_t>(m_infill_extrusion_width * 0.001 / region_config.fill_density);
+    m_infill_extrusion_width = scaled<float>(region_config.sparse_infill_line_width.value);
+    m_supporting_radius = scaled<coord_t>(m_infill_extrusion_width * 0.001 / region_config.sparse_infill_density);
 
     const double lightning_infill_overhang_angle = M_PI / 4; // 45 degrees
     const double lightning_infill_prune_angle = M_PI / 4; // 45 degrees

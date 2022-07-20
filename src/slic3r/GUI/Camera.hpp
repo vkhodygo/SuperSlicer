@@ -8,6 +8,11 @@
 namespace Slic3r {
 namespace GUI {
 
+#define REQUIRES_ZOOM_TO_CUR_PLATE      -1
+#define REQUIRES_ZOOM_TO_ALL_PLATE      -2
+#define REQUIRES_ZOOM_TO_PLATE_IDLE     -100
+
+
 struct Camera
 {
     static const double DefaultDistance;
@@ -27,6 +32,9 @@ struct Camera
     };
 
     bool requires_zoom_to_bed{ false };
+    //BBS
+    bool requires_zoom_to_volumes{ false };
+    int  requires_zoom_to_plate{ REQUIRES_ZOOM_TO_PLATE_IDLE };
 
 private:
     EType m_type{ EType::Perspective };
@@ -53,8 +61,8 @@ public:
     EType get_type() const { return m_type; }
     std::string get_type_as_string() const;
     void set_type(EType type);
-    // valid values for type: "0" -> ortho, "1" -> perspective
-    void set_type(const std::string& type) { set_type((type == "1") ? EType::Perspective : EType::Ortho); }
+    // valid values for type: "false" -> ortho, "true" -> perspective
+    void set_type(const std::string& type) { set_type((type == "true") ? EType::Perspective : EType::Ortho); }
     void select_next_type();
 
     void enable_update_config_on_type_change(bool enable) { m_update_config_on_type_change_enabled = enable; }
@@ -64,6 +72,7 @@ public:
 
     double get_distance() const { return (get_position() - m_target).norm(); }
     double get_gui_scale() const { return m_gui_scale; }
+    float  get_zenit() const { return m_zenit; }
 
     double get_zoom() const { return m_zoom; }
     double get_inv_zoom() const { assert(m_zoom != 0.0); return 1.0 / m_zoom; }
@@ -73,15 +82,20 @@ public:
     const BoundingBoxf3& get_scene_box() const { return m_scene_box; }
     void set_scene_box(const BoundingBoxf3& box) { m_scene_box = box; }
 
+
     void select_view(const std::string& direction);
 
     const std::array<int, 4>& get_viewport() const { return m_viewport; }
     const Transform3d& get_view_matrix() const { return m_view_matrix; }
     const Transform3d& get_projection_matrix() const { return m_projection_matrix; }
 
+    //BBS
+    const Eigen::Quaterniond& get_view_rotation() const {return m_view_rotation; }
+
     Vec3d get_dir_right() const { return m_view_matrix.matrix().block(0, 0, 3, 3).row(0); }
     Vec3d get_dir_up() const { return m_view_matrix.matrix().block(0, 0, 3, 3).row(1); }
     Vec3d get_dir_forward() const { return -m_view_matrix.matrix().block(0, 0, 3, 3).row(2); }
+
 
     Vec3d get_position() const { return m_view_matrix.matrix().inverse().block(0, 3, 3, 1); }
 
@@ -107,6 +121,10 @@ public:
     // translate the camera in world space
     void translate_world(const Vec3d& displacement) { set_target(m_target + displacement); }
 
+    // BBS rotate the camera on a sphere having center == target
+    void rotate_on_sphere_with_target(double delta_azimut_rad, double delta_zenit_rad, bool apply_limits, Vec3d target);
+    void rotate_local_with_target(const Vec3d& rotation_rad, Vec3d target);
+
     // rotate the camera on a sphere having center == m_target and radius == m_distance
     // using the given variations of spherical coordinates
     // if apply_limits == true the camera stops rotating when its forward vector is parallel to the world Z axis
@@ -124,10 +142,13 @@ public:
             look_at(get_position(), m_target, Vec3d::UnitZ());
     }
 
+    //BBS store and load camera view
+    void load_camera_view(Camera& cam);
+
     void look_at(const Vec3d& position, const Vec3d& target, const Vec3d& up);
 
     double max_zoom() const { return 250.0; }
-    double min_zoom() const { return 0.7 * calc_zoom_to_bounding_box_factor(m_scene_box); }
+    double min_zoom() const { return 0.2 * calc_zoom_to_bounding_box_factor(m_scene_box); }
 
 private:
     // returns tight values for nearZ and farZ plane around the given bounding box

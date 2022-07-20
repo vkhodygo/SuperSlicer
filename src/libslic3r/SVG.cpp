@@ -157,8 +157,13 @@ void SVG::draw(const Polygon &polygon, std::string fill)
 
 void SVG::draw(const Polygons &polygons, std::string fill)
 {
-    for (Polygons::const_iterator it = polygons.begin(); it != polygons.end(); ++it)
-        this->draw(*it, fill);
+    for (Polygons::const_iterator it = polygons.begin(); it != polygons.end(); ++it) {
+        // BBS
+        if (it->is_counter_clockwise())
+            this->draw(*it, fill);
+        else
+            this->draw(*it, "white");
+    }
 }
 
 void SVG::draw(const Polyline &polyline, std::string stroke, coordf_t stroke_width)
@@ -274,7 +279,7 @@ std::string SVG::get_path_d(const ClipperLib::Path &path, double scale, bool clo
     return d.str();
 }
 
-void SVG::draw_text(const Point &pt, const char *text, const char *color)
+void SVG::draw_text(const Point &pt, const char *text, const char *color, int font_size)
 {
     fprintf(this->f,
         "<text x=\"%f\" y=\"%f\" font-family=\"sans-serif\" font-size=\"20px\" fill=\"%s\">%s</text>",
@@ -295,6 +300,36 @@ void SVG::draw_legend(const Point &pt, const char *text, const char *color)
         to_svg_x(pt(0)-origin(0)) + 20.f,
         to_svg_y(pt(1)-origin(1)),
         "black", text);
+}
+
+//BBS
+void SVG::draw_grid(const BoundingBox& bbox, const std::string& stroke, coordf_t stroke_width, coordf_t step)
+{
+    // draw grid
+    Point bbox_size = bbox.size();
+    if (bbox_size(0) < step || bbox_size(1) < step)
+        return;
+
+    Point start_pt(bbox.min(0), bbox.min(1));
+    Point end_pt(bbox.max(1), bbox.min(1));
+    for (coordf_t y = bbox.min(1); y <= bbox.max(1); y += step) {
+        start_pt(1) = y;
+        end_pt(1) = y;
+        draw(Line(start_pt, end_pt), stroke, stroke_width);
+    }
+
+    start_pt(1) = bbox.min(1);
+    end_pt(1) = bbox.max(1);
+    for (coordf_t x = bbox.min(0); x <= bbox.max(0); x += step) {
+        start_pt(0) = x;
+        end_pt(0) = x;
+        draw(Line(start_pt, end_pt), stroke, stroke_width);
+    }
+}
+
+void SVG::add_comment(const std::string comment)
+{
+    fprintf(this->f, "<!-- %s -->\n", comment.c_str());
 }
 
 void SVG::Close()

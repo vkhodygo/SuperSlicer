@@ -7,51 +7,14 @@
 #include <wx/checkbox.h>
 #include <wx/msgdlg.h>
 
-#include "RammingChart.hpp"
-
-
-class RammingPanel : public wxPanel {
-public:
-    RammingPanel(wxWindow* parent);
-    RammingPanel(wxWindow* parent,const std::string& data);
-    std::string get_parameters();
-
-private:
-    Chart* m_chart = nullptr;
-    wxSpinCtrl* m_widget_volume = nullptr;
-    wxSpinCtrl* m_widget_ramming_line_width_multiplicator = nullptr;
-    wxSpinCtrl* m_widget_ramming_step_multiplicator = nullptr;
-    wxSpinCtrlDouble* m_widget_time = nullptr;
-    int m_ramming_step_multiplicator;
-    int m_ramming_line_width_multiplicator;
-      
-    void line_parameters_changed();
-};
-
-
-class RammingDialog : public wxDialog {
-public:
-    RammingDialog(wxWindow* parent,const std::string& parameters);    
-    std::string get_parameters() { return m_output_data; }
-private:
-    RammingPanel* m_panel_ramming = nullptr;
-    std::string m_output_data;
-};
-
-
-
-
-
-
-
 class WipingPanel : public wxPanel {
 public:
     WipingPanel(wxWindow* parent, const std::vector<float>& matrix, const std::vector<float>& extruders, const std::vector<std::string>& extruder_colours, wxButton* widget_button);
     std::vector<float> read_matrix_values();
     std::vector<float> read_extruders_values();
     void toggle_advanced(bool user_action = false);
-	void format_sizer(wxSizer* sizer, wxPanel* page, wxGridSizer* grid_sizer, const wxString& info, const wxString& table_title, int table_lshift=0);
-        
+    void create_panels(wxWindow* parent, const int num);
+
 private:
     void fill_in_matrix();
     bool advanced_matches_simple();
@@ -64,6 +27,7 @@ private:
     bool m_advanced                     = false;
 	wxPanel*	m_page_simple = nullptr;
 	wxPanel*	m_page_advanced = nullptr;
+    wxPanel* header_line_panel = nullptr;
     wxBoxSizer*	m_sizer = nullptr;
     wxBoxSizer* m_sizer_simple = nullptr;
     wxBoxSizer* m_sizer_advanced = nullptr;
@@ -81,6 +45,7 @@ public:
     std::vector<float> get_matrix() const    { return m_output_matrix; }
     std::vector<float> get_extruders() const { return m_output_extruders; }
 
+    wxBoxSizer* create_btn_sizer(long flags);
 
 private:
     WipingPanel*  m_panel_wiping  = nullptr;

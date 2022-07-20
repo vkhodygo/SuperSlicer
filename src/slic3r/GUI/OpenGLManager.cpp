@@ -95,6 +95,8 @@ void OpenGLManager::GLInfo::detect() const
     *const_cast<std::string*>(&m_vendor) = gl_get_string_safe(GL_VENDOR, "N/A");
     *const_cast<std::string*>(&m_renderer) = gl_get_string_safe(GL_RENDERER, "N/A");
 
+    BOOST_LOG_TRIVIAL(info) << boost::format("got opengl version %1%, glsl version %2%, vendor %3%")%m_version %m_glsl_version %m_vendor<< std::endl;
+
     int* max_tex_size = const_cast<int*>(&m_max_tex_size);
     glsafe(::glGetIntegerv(GL_MAX_TEXTURE_SIZE, max_tex_size));
 
@@ -233,18 +235,22 @@ OpenGLManager::~OpenGLManager()
 bool OpenGLManager::init_gl()
 {
     if (!m_gl_initialized) {
-        if (glewInit() != GLEW_OK) {
+        GLenum result = glewInit();
+        if (result != GLEW_OK) {
             BOOST_LOG_TRIVIAL(error) << "Unable to init glew library";
             return false;
         }
+	//BOOST_LOG_TRIVIAL(info) << "glewInit Success."<< std::endl;
         m_gl_initialized = true;
         if (GLEW_EXT_texture_compression_s3tc)
             s_compressed_textures_supported = true;
         else
             s_compressed_textures_supported = false;
 
-        if (GLEW_ARB_framebuffer_object)
+        if (GLEW_ARB_framebuffer_object) {
             s_framebuffers_type = EFramebufferType::Arb;
+            BOOST_LOG_TRIVIAL(info) << "Found Framebuffer Type ARB."<< std::endl;
+	}
         else if (GLEW_EXT_framebuffer_object)
             s_framebuffers_type = EFramebufferType::Ext;
         else
@@ -254,24 +260,20 @@ bool OpenGLManager::init_gl()
         if (!valid_version) {
             // Complain about the OpenGL version.
             wxString message = from_u8((boost::format(
-                _utf8(L("PrusaSlicer requires OpenGL 2.0 capable graphics driver to run correctly, \n"
-                    "while OpenGL version %s, render %s, vendor %s was detected."))) % s_gl_info.get_version() % s_gl_info.get_renderer() % s_gl_info.get_vendor()).str());
+                _utf8(L("The application cannot run normally because OpenGL version is lower than 2.0.\n")))).str());
             message += "\n";
-        	message += _L("You may need to update your graphics card driver.");
-#ifdef _WIN32
-            message += "\n";
-            message += _L("As a workaround, you may run PrusaSlicer with a software rendered 3D graphics by running prusa-slicer.exe with the --sw-renderer parameter.");
-#endif
-        	wxMessageBox(message, wxString("PrusaSlicer - ") + _L("Unsupported OpenGL version"), wxOK | wxICON_ERROR);
+        	message += _L("Please upgrade your graphics card driver.");
+        	wxMessageBox(message, _L("Unsupported OpenGL version"), wxOK | wxICON_ERROR);
         }
 
-        if (valid_version) {
+        if (valid_version)
+	{
             // load shaders
             auto [result, error] = m_shaders_manager.init();
             if (!result) {
                 wxString message = from_u8((boost::format(
-                    _utf8(L("Unable to load the following shaders:\n%s"))) % error).str());
-                wxMessageBox(message, wxString("PrusaSlicer - ") + _L("Error loading shaders"), wxOK | wxICON_ERROR);
+                    _utf8(L("Unable to load shaders:\n%s"))) % error).str());
+                wxMessageBox(message, _L("Error loading shaders"), wxOK | wxICON_ERROR);
             }
         }
     }
@@ -297,19 +299,21 @@ wxGLContext* OpenGLManager::init_glcontext(wxGLCanvas& canvas)
 wxGLCanvas* OpenGLManager::create_wxglcanvas(wxWindow& parent)
 {
     int attribList[] = { 
-    	WX_GL_RGBA,
-    	WX_GL_DOUBLEBUFFER,
-    	// RGB channels each should be allocated with 8 bit depth. One should almost certainly get these bit depths by default.
-      	WX_GL_MIN_RED, 			8,
-      	WX_GL_MIN_GREEN, 		8,
-      	WX_GL_MIN_BLUE, 		8,
-      	// Requesting an 8 bit alpha channel. Interestingly, the NVIDIA drivers would most likely work with some alpha plane, but glReadPixels would not return
-      	// the alpha channel on NVIDIA if not requested when the GL context is created.
-      	WX_GL_MIN_ALPHA, 		8,
-    	WX_GL_DEPTH_SIZE, 		24,
-    	WX_GL_SAMPLE_BUFFERS, 	GL_TRUE,
-    	WX_GL_SAMPLES, 			4,
-    	0
+        WX_GL_RGBA,
+        WX_GL_DOUBLEBUFFER,
+        // RGB channels each should be allocated with 8 bit depth. One should almost certainly get these bit depths by default.
+        WX_GL_MIN_RED, 			8,
+        WX_GL_MIN_GREEN, 		8,
+        WX_GL_MIN_BLUE, 		8,
+        // Requesting an 8 bit alpha channel. Interestingly, the NVIDIA drivers would most likely work with some alpha plane, but glReadPixels would not return
+        // the alpha channel on NVIDIA if not requested when the GL context is created.
+        WX_GL_MIN_ALPHA, 		8,
+        WX_GL_DEPTH_SIZE, 		24,
+        //BBS: turn on stencil buffer for outline
+        WX_GL_STENCIL_SIZE,     8,
+        WX_GL_SAMPLE_BUFFERS, 	GL_TRUE,
+        WX_GL_SAMPLES, 			4,
+        0
     };
 
     if (s_multisample == EMultisampleState::Unknown) {

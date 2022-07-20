@@ -11,23 +11,29 @@
 
 namespace Slic3r {
 
+enum class LiftType {
+    NormalLift,
+    LazyLift,
+    SpiralLift
+};
+
 class GCodeWriter {
 public:
     GCodeConfig config;
     bool multiple_extruders;
     
     GCodeWriter() : 
-        multiple_extruders(false), m_extrusion_axis("E"), m_extruder(nullptr),
+        multiple_extruders(false), m_extruder(nullptr),
         m_single_extruder_multi_material(false),
         m_last_acceleration(0), m_max_acceleration(0),
-        m_last_bed_temperature(0), m_last_bed_temperature_reached(true), 
-        m_lifted(0)
+        /*m_last_bed_temperature(0), */m_last_bed_temperature_reached(true),
+        m_lifted(0),
+        m_to_lift(0),
+        m_to_lift_type(LiftType::NormalLift)
         {}
     Extruder*            extruder()             { return m_extruder; }
     const Extruder*      extruder()     const   { return m_extruder; }
 
-    // Returns empty string for gcfNoExtrusion.
-    std::string          extrusion_axis() const { return m_extrusion_axis; }
     void                 apply_print_config(const PrintConfig &print_config);
     // Extruders are expected to be sorted in an increasing order.
     void                 set_extruders(std::vector<unsigned int> extruder_ids);
@@ -42,7 +48,8 @@ public:
     std::string preamble();
     std::string postamble() const;
     std::string set_temperature(unsigned int temperature, bool wait = false, int tool = -1) const;
-    std::string set_bed_temperature(unsigned int temperature, bool wait = false);
+    // BBS
+    std::string set_bed_temperature(std::vector<int> temps_per_bed, int default_temp, bool wait = false);
     std::string set_acceleration(unsigned int acceleration);
     std::string reset_e(bool force = false);
     std::string update_progress(unsigned int num, unsigned int tot, bool allow_100 = false) const;
@@ -60,37 +67,67 @@ public:
     std::string travel_to_xyz(const Vec3d &point, const std::string &comment = std::string());
     std::string travel_to_z(double z, const std::string &comment = std::string());
     bool        will_move_z(double z) const;
-    std::string extrude_to_xy(const Vec2d &point, double dE, const std::string &comment = std::string());
-    std::string extrude_to_xyz(const Vec3d &point, double dE, const std::string &comment = std::string());
+    std::string extrude_to_xy(const Vec2d &point, double dE, const std::string &comment = std::string(), bool force_no_extrusion = false);
+    //BBS: generate G2 or G3 extrude which moves by arc
+    std::string extrude_arc_to_xy(const Vec2d &point, const Vec2d &center_offset, double dE, const bool is_ccw, const std::string &comment = std::string(), bool force_no_extrusion = false);
+    std::string extrude_to_xyz(const Vec3d &point, double dE, const std::string &comment = std::string(), bool force_no_extrusion = false);
     std::string retract(bool before_wipe = false);
     std::string retract_for_toolchange(bool before_wipe = false);
     std::string unretract();
-    std::string lift();
+    std::string lift(LiftType lift_type = LiftType::NormalLift);
     std::string unlift();
     Vec3d       get_position() const { return m_pos; }
 
+    //BBS: set offset for gcode writer
+    void set_xy_offset(double x, double y) { m_x_offset = x; m_y_offset = y; }
+
     // To be called by the CoolingBuffer from another thread.
-    static std::string set_fan(const GCodeFlavor gcode_flavor, bool gcode_comments, unsigned int speed);
+    static std::string set_fan(const GCodeFlavor gcode_flavor, unsigned int speed);
     // To be called by the main thread. It always emits the G-code, it does not remember the previous state.
     // Keeping the state is left to the CoolingBuffer, which runs asynchronously on another thread.
     std::string set_fan(unsigned int speed) const;
+    //BBS: set additional fan speed for BBS machine only
+    static std::string set_additional_fan(unsigned int speed);
+
+    //BBS:
+    void set_current_position_clear(bool clear) { m_is_current_pos_clear = clear; };
+    bool is_current_position_clear() const { return m_is_current_pos_clear; };
+    //BBS:
+    static const bool full_gcode_comment;
 
 private:
 	// Extruders are sorted by their ID, so that binary search is possible.
     std::vector<Extruder> m_extruders;
-    std::string     m_extrusion_axis;
     bool            m_single_extruder_multi_material;
     Extruder*       m_extruder;
     unsigned int    m_last_acceleration;
     // Limit for setting the acceleration, to respect the machine limits set for the Marlin firmware.
     // If set to zero, the limit is not in action.
     unsigned int    m_max_acceleration;
-    unsigned int    m_last_bed_temperature;
+    //BBS
+    unsigned int    m_last_additional_fan_speed;
+    // BBS
+    std::vector<int> m_last_bed_temperature;
     bool            m_last_bed_temperature_reached;
     double          m_lifted;
+
+    // BBS
+    double          m_to_lift;
+    LiftType        m_to_lift_type;
     Vec3d           m_pos = Vec3d::Zero();
+    //BBS: this flag is used to indicate whether the m_pos is real.
+    //A example that of the first move, the m_pos is zero, but the real position of extruder doesn't
+    //Pos must be clear after the first xyz travel move
+    bool            m_is_current_pos_clear = false;
+    //BBS: x, y offset for gcode generated
+    double          m_x_offset{ 0 };
+    double          m_y_offset{ 0 };
+
+    //Radian threshold of slope for lazy lift and spiral lift;
+    static const double slope_threshold;
 
     std::string _travel_to_z(double z, const std::string &comment);
+    std::string _spiral_travel_to_z(double z, const Vec2d &ij_offset, const std::string &comment);
     std::string _retract(double length, double restart_extra, const std::string &comment);
 };
 
@@ -138,15 +175,17 @@ public:
         this->emit_axis('Z', z, XYZF_EXPORT_DIGITS);
     }
 
-    void emit_e(const std::string &axis, double v) {
-        if (! axis.empty()) {
-            // not gcfNoExtrusion
-            this->emit_axis(axis[0], v, E_EXPORT_DIGITS);
-        }
+    void emit_e(double v) {
+        this->emit_axis('E', v, E_EXPORT_DIGITS);
     }
 
     void emit_f(double speed) {
         this->emit_axis('F', speed, XYZF_EXPORT_DIGITS);
+    }
+    //BBS
+    void emit_ij(const Vec2d &point) {
+        this->emit_axis('I', point.x(), XYZF_EXPORT_DIGITS);
+        this->emit_axis('J', point.y(), XYZF_EXPORT_DIGITS);
     }
 
     void emit_string(const std::string &s) {
@@ -184,6 +223,19 @@ public:
 
     GCodeG1Formatter(const GCodeG1Formatter&) = delete;
     GCodeG1Formatter& operator=(const GCodeG1Formatter&) = delete;
+};
+
+class GCodeG2G3Formatter : public GCodeFormatter {
+public:
+    GCodeG2G3Formatter(bool is_ccw) {
+        this->buf[0] = 'G';
+        this->buf[1] = is_ccw ? '3' : '2';
+        this->buf_end = buf + buflen;
+        this->ptr_err.ptr = this->buf + 2;
+    }
+
+    GCodeG2G3Formatter(const GCodeG2G3Formatter&) = delete;
+    GCodeG2G3Formatter& operator=(const GCodeG2G3Formatter&) = delete;
 };
 
 } /* namespace Slic3r */

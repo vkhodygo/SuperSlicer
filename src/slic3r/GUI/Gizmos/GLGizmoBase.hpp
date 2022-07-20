@@ -8,6 +8,8 @@
 
 #include <cereal/archives/binary.hpp>
 
+#define ENABLE_FIXED_GRABBER 1
+
 class wxWindow;
 
 namespace Slic3r {
@@ -18,15 +20,7 @@ class ModelObject;
 
 namespace GUI {
 
-static const std::array<float, 4> DEFAULT_BASE_COLOR = { 0.625f, 0.625f, 0.625f, 1.0f };
-static const std::array<float, 4> DEFAULT_DRAG_COLOR = { 1.0f, 1.0f, 1.0f, 1.0f };
-static const std::array<float, 4> DEFAULT_HIGHLIGHT_COLOR = { 1.0f, 0.38f, 0.0f, 1.0f };
-static const std::array<std::array<float, 4>, 3> AXES_COLOR = {{
-                                                                { 0.75f, 0.0f, 0.0f, 1.0f },
-                                                                { 0.0f, 0.75f, 0.0f, 1.0f },
-                                                                { 0.0f, 0.0f, 0.75f, 1.0f }
-                                                              }};
-static const std::array<float, 4> CONSTRAINED_COLOR = { 0.5f, 0.5f, 0.5f, 1.0f };
+
 
 class ImGuiWrapper;
 class GLCanvas3D;
@@ -41,16 +35,38 @@ public:
     // (254 is choosen to leave some space for forward compatibility)
     static const unsigned int BASE_ID = 255 * 255 * 254;
 
+    static float INV_ZOOM;
+
+    //BBS colors
+    static std::array<float, 4> DEFAULT_BASE_COLOR;
+    static std::array<float, 4> DEFAULT_DRAG_COLOR;
+    static std::array<float, 4> DEFAULT_HIGHLIGHT_COLOR;
+    static std::array<std::array<float, 4>, 3> AXES_COLOR;
+    static std::array<std::array<float, 4>, 3> AXES_HOVER_COLOR;
+    static std::array<float, 4> CONSTRAINED_COLOR;
+    static std::array<float, 4> FLATTEN_COLOR;
+    static std::array<float, 4> FLATTEN_HOVER_COLOR;
+    static std::array<float, 4> GRABBER_NORMAL_COL;
+    static std::array<float, 4> GRABBER_HOVER_COL;
+    static std::array<float, 4> GRABBER_UNIFORM_COL;
+    static std::array<float, 4> GRABBER_UNIFORM_HOVER_COL;
+
+    static void update_render_colors();
+    static void load_render_colors();
+
 protected:
     struct Grabber
     {
         static const float SizeFactor;
         static const float MinHalfSize;
         static const float DraggingScaleFactor;
+        static const float FixedGrabberSize;
+        static const float FixedRadiusSize;
 
         Vec3d center;
         Vec3d angles;
         std::array<float, 4> color;
+        std::array<float, 4> hover_color;
         bool enabled;
         bool dragging;
 
@@ -61,6 +77,7 @@ protected:
 
         float get_half_size(float size) const;
         float get_dragging_half_size(float size) const;
+        const GLModel& get_cube() const;
 
     private:
         void render(float size, const std::array<float, 4>& render_color, bool picking) const;
@@ -168,6 +185,7 @@ public:
     virtual std::string get_tooltip() const { return ""; }
 
 protected:
+    float last_input_window_width = 0;
     virtual bool on_init() = 0;
     virtual void on_load(cereal::BinaryInputArchive& ar) {}
     virtual void on_save(cereal::BinaryOutputArchive& ar) const {}
@@ -186,6 +204,9 @@ protected:
     virtual void on_render_for_picking() = 0;
     virtual void on_render_input_window(float x, float y, float bottom_limit) {}
 
+    bool GizmoImguiBegin(const std::string& name, int flags);
+    void GizmoImguiEnd();
+    void GizmoImguiSetNextWIndowPos(float x, float y, int flag, float pivot_x = 0.0f, float pivot_y = 0.0f);
     // Returns the picking color for the given id, based on the BASE_ID constant
     // No check is made for clashing with other picking color (i.e. GLVolumes)
     std::array<float, 4> picking_color_component(unsigned int id) const;
@@ -202,6 +223,7 @@ private:
     // When True then need new rendering
     bool m_dirty;
 };
+
 
 // Produce an alpha channel checksum for the red green blue components. The alpha channel may then be used to verify, whether the rgb components
 // were not interpolated by alpha blending or multi sampling.

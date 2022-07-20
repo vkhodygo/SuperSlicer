@@ -38,7 +38,7 @@ private:
 
 
 // Confirmation dialog informing about configuration update. Lists updated bundles & their versions.
-class MsgUpdateConfig : public MsgDialog
+class MsgUpdateConfig : public DPIDialog
 {
 public:
 	struct Update
@@ -46,22 +46,25 @@ public:
 		std::string vendor;
 		Semver version;
 		std::string comment;
-		std::string changelog_url;
+		//BBS: use changelog string instead of url
+		std::string change_log;
 
-		Update(std::string vendor, Semver version, std::string comment, std::string changelog_url)
+        //BBS: use changelog string instead of url
+		Update(std::string vendor, Semver version, std::string comment, std::string changelog)
 			: vendor(std::move(vendor))
 			, version(std::move(version))
 			, comment(std::move(comment))
-			, changelog_url(std::move(changelog_url))
+			, change_log(std::move(changelog))
 		{}
 	};
 
 	// force_before_wizard - indicates that check of updated is forced before ConfigWizard opening
-	MsgUpdateConfig(const std::vector<Update> &updates, bool force_before_wizard = false);
-	MsgUpdateConfig(MsgUpdateConfig &&) = delete;
-	MsgUpdateConfig(const MsgUpdateConfig &) = delete;
-	MsgUpdateConfig &operator=(MsgUpdateConfig &&) = delete;
-	MsgUpdateConfig &operator=(const MsgUpdateConfig &) = delete;
+    MsgUpdateConfig(const std::vector<Update> &updates, bool force_before_wizard = false);
+    void on_dpi_changed(const wxRect &suggested_rect);
+    // MsgUpdateConfig(MsgUpdateConfig &&)      = delete;
+    //MsgUpdateConfig(const MsgUpdateConfig &) = delete;
+    //MsgUpdateConfig &operator=(MsgUpdateConfig &&) = delete;
+    //MsgUpdateConfig &operator=(const MsgUpdateConfig &) = delete;
 	~MsgUpdateConfig();
 };
 
@@ -74,13 +77,15 @@ public:
 		std::string vendor;
 		Semver version;
 		std::string comment;
-		std::string changelog_url;
+		//BBS: use changelog string instead of url
+		std::string change_log;
 
-		Update(std::string vendor, Semver version, std::string comment, std::string changelog_url)
+		//BBS: use changelog string instead of url
+		Update(std::string vendor, Semver version, std::string comment, std::string changelog)
 			: vendor(std::move(vendor))
 			, version(std::move(version))
 			, comment(std::move(comment))
-			, changelog_url(std::move(changelog_url))
+			, change_log(std::move(changelog))
 		{}
 	};
 
@@ -106,7 +111,7 @@ public:
 };
 
 // Informs about a legacy data directory - an update from Slic3r PE < 1.40
-class MsgDataLegacy : public MsgDialog
+/*class MsgDataLegacy : public MsgDialog
 {
 public:
 	MsgDataLegacy();
@@ -115,7 +120,7 @@ public:
 	MsgDataLegacy &operator=(MsgDataLegacy &&) = delete;
 	MsgDataLegacy &operator=(const MsgDataLegacy &) = delete;
 	~MsgDataLegacy();
-};
+};*/
 
 // Informs about absence of bundles requiring update.
 class MsgNoUpdates : public MsgDialog

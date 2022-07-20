@@ -1,7 +1,7 @@
 #ifndef slic3r_3DBed_hpp_
 #define slic3r_3DBed_hpp_
 
-#include "GLTexture.hpp"
+//#include "GLTexture.hpp"
 #include "3DScene.hpp"
 #include "GLModel.hpp"
 
@@ -28,6 +28,8 @@ class GeometryBuffer
 public:
     bool set_from_triangles(const std::vector<Vec2f> &triangles, float z);
     bool set_from_lines(const Lines& lines, float z);
+    //BBS: add APi to set from 3d lines
+    bool set_from_3d_Lines(const Lines3& lines);
 
     const float* get_vertices_data() const;
     unsigned int get_vertices_data_size() const { return (unsigned int)m_vertices.size() * get_vertex_data_size(); }
@@ -39,6 +41,14 @@ public:
 
 class Bed3D
 {
+public:
+    static std::array<float, 4> AXIS_X_COLOR;
+    static std::array<float, 4> AXIS_Y_COLOR;
+    static std::array<float, 4> AXIS_Z_COLOR;
+
+    static void update_render_colors();
+    static void load_render_colors();
+
     class Axes
     {
     public:
@@ -74,24 +84,27 @@ public:
 
 private:
     BuildVolume m_build_volume;
-    Type m_type{ Type::Custom };
-    std::string m_texture_filename;
+    Type m_type{ Type::System };
+    //std::string m_texture_filename;
     std::string m_model_filename;
     // Print volume bounding box exteded with axes and model.
     BoundingBoxf3 m_extended_bounding_box;
     // Slightly expanded print bed polygon, for collision detection.
-    Polygon m_polygon;
-    GeometryBuffer m_triangles;
-    GeometryBuffer m_gridlines;
-    GLTexture m_texture;
+    //Polygon m_polygon;
+    //GeometryBuffer m_triangles;
+    //GeometryBuffer m_gridlines;
+    //GLTexture m_texture;
     // temporary texture shown until the main texture has still no levels compressed
-    GLTexture m_temp_texture;
+    //GLTexture m_temp_texture;
     GLModel m_model;
     Vec3d m_model_offset{ Vec3d::Zero() };
     unsigned int m_vbo_id{ 0 };
     Axes m_axes;
 
     float m_scale_factor{ 1.0f };
+    //BBS: add part plate related logic
+    Vec2d m_position{ Vec2d::Zero() };
+    std::vector<Vec2d>  m_bed_shape;
 
 public:
     Bed3D() = default;
@@ -101,7 +114,13 @@ public:
     // Return true if the bed shape changed, so the calee will update the UI.
     //FIXME if the build volume max print height is updated, this function still returns zero
     // as this class does not use it, thus there is no need to update the UI.
-    bool set_shape(const Pointfs& bed_shape, const double max_print_height, const std::string& custom_texture, const std::string& custom_model, bool force_as_custom = false);
+    // BBS
+    bool set_shape(const Pointfs& printable_area, const double printable_height, const std::string& custom_model, bool force_as_custom = false,
+        const Vec2d position = Vec2d::Zero(), bool with_reset = true);
+
+    void set_position(Vec2d& position);
+    void set_axes_mode(bool origin);
+    const Vec2d& get_position() const { return m_position; }
 
     // Build volume geometry for various collision detection tasks.
     const BuildVolume& build_volume() const { return m_build_volume; }
@@ -119,23 +138,25 @@ public:
     bool contains(const Point& point) const;
     Point point_projection(const Point& point) const;
 
-    void render(GLCanvas3D& canvas, bool bottom, float scale_factor, bool show_axes, bool show_texture);
-    void render_for_picking(GLCanvas3D& canvas, bool bottom, float scale_factor);
+    void render(GLCanvas3D& canvas, bool bottom, float scale_factor, bool show_axes);
+    //void render_for_picking(GLCanvas3D& canvas, bool bottom, float scale_factor);
 
 private:
+    //BBS: add partplate related logic
     // Calculate an extended bounding box from axes and current model for visualization purposes.
-    BoundingBoxf3 calc_extended_bounding_box() const;
+    BoundingBoxf3 calc_extended_bounding_box(bool consider_model_offset = true) const;
     void calc_triangles(const ExPolygon& poly);
     void calc_gridlines(const ExPolygon& poly, const BoundingBox& bed_bbox);
+    void update_model_offset() const;
     static std::tuple<Type, std::string, std::string> detect_type(const Pointfs& shape);
     void render_internal(GLCanvas3D& canvas, bool bottom, float scale_factor,
-        bool show_axes, bool show_texture, bool picking);
+        bool show_axes);
     void render_axes() const;
-    void render_system(GLCanvas3D& canvas, bool bottom, bool show_texture) const;
-    void render_texture(bool bottom, GLCanvas3D& canvas) const;
+    void render_system(GLCanvas3D& canvas, bool bottom) const;
+    //void render_texture(bool bottom, GLCanvas3D& canvas) const;
     void render_model() const;
-    void render_custom(GLCanvas3D& canvas, bool bottom, bool show_texture, bool picking) const;
-    void render_default(bool bottom, bool picking) const;
+    void render_custom(GLCanvas3D& canvas, bool bottom) const;
+    void render_default(bool bottom) const;
     void release_VBOs();
 };
 

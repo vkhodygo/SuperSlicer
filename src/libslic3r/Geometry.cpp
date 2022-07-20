@@ -325,7 +325,8 @@ Vec3d extract_euler_angles(const Eigen::Matrix<double, 3, 3, Eigen::DontAlign>& 
     // reference: http://www.gregslabaugh.net/publications/euler.pdf
     Vec3d angles1 = Vec3d::Zero();
     Vec3d angles2 = Vec3d::Zero();
-    if (std::abs(std::abs(rotation_matrix(2, 0)) - 1.0) < 1e-5)
+    // BBS: rotation_matrix(2, 0) may be slighterly larger than 1 due to numerical accuracy
+    if (std::abs(std::abs(rotation_matrix(2, 0)) - 1.0) < 1e-5 || std::abs(rotation_matrix(2, 0))>1)
     {
         angles1(2) = 0.0;
         if (rotation_matrix(2, 0) < 0.0) // == -1.0
@@ -372,6 +373,40 @@ Vec3d extract_euler_angles(const Transform3d& transform)
     m.col(1).normalize();
     m.col(2).normalize();
     return extract_euler_angles(m);
+}
+
+void rotation_from_two_vectors(Vec3d from, Vec3d to, Vec3d& rotation_axis, double& phi, Matrix3d* rotation_matrix)
+{
+    double epsilon = 1e-5;
+    // note: a.isMuchSmallerThan(b,prec) compares a.abs().sum()<b*prec, so previously we set b=0 && prec=dummpy_prec() is wrong
+    if ((from + to).isMuchSmallerThan(1, epsilon))
+    {
+        rotation_axis << 1, 0, 0;
+        phi = M_PI;
+        if (rotation_matrix)
+            *rotation_matrix = -Matrix3d::Identity();
+    }
+    else if ((from - to).isMuchSmallerThan(1, epsilon)) {
+        rotation_axis << 1, 0, 0;
+        phi = 0;
+        if (rotation_matrix)
+            *rotation_matrix = Matrix3d::Identity();
+    }
+    else {
+        rotation_axis = from.cross(to);
+        double s = rotation_axis.norm(); // sin(phi)
+        double c = from.dot(to); // cos(phi)
+        auto& v = rotation_axis;
+        Matrix3d kmat;
+        kmat << 0, -v[2], v[1],
+            v[2], 0, -v[0],
+            -v[1], v[0], 0;
+
+        rotation_axis.normalize();
+        phi = acos(std::min(from.dot(to), 1.0));
+        if (rotation_matrix)
+            *rotation_matrix = Matrix3d::Identity() + kmat + kmat * kmat * ((1 - c) / (s * s));
+    }
 }
 
 Transformation::Flags::Flags()

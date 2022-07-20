@@ -49,6 +49,25 @@ struct ArrangePolygon {
     coord_t   inflation = 0;        /// Arrange with inflated polygon
     int       bed_idx{UNARRANGED};  /// To which logical bed does poly belong...
     int       priority{0};
+    //BBS: add locked_plate to indicate whether it is in the locked plate
+    int       locked_plate{ -1 };
+    bool      is_virt_object{ false };
+    bool      is_wipe_tower{false};
+    //BBS: add row/col for sudoku-style layout
+    int       row{0};
+    int       col{0};
+    std::vector<int>  extrude_ids{1};        ///extruder_id for least extruder switch
+    int       bed_temp{0};         ///bed temperature for different material judge
+    int       print_temp{0};      ///print temperature for different material judge
+    int       first_bed_temp{ 0 };      ///first layer bed temperature for different material judge
+    int       first_print_temp{ 0 };      ///first layer print temperature for different material judge
+    int       vitrify_temp{ 0 };   // max bed temperature for material compatibility, which is usually the filament vitrification temp
+    int       itemid{ 0 };         // item id in the vector, used for accessing all possible params like extrude_id
+    int       is_applied{ 0 };     // transform has been applied
+    double    height{ 0 };         // item height 
+    double    auto_brim_width{ 0 };     // auto brim width
+    double    user_brim_width{ 0 };     // user defined brim width
+    std::string name;
     
     // If empty, any rotation is allowed (currently unsupported)
     // If only a zero is there, no rotation is allowed
@@ -58,7 +77,12 @@ struct ArrangePolygon {
     std::function<void(const ArrangePolygon&)> setter = nullptr;
     
     /// Helper function to call the setter with the arrange data arguments
-    void apply() const { if (setter) setter(*this); }
+    void apply() {
+        if (setter && !is_applied) { 
+            setter(*this);
+            is_applied = 1;
+        }
+    }
 
     /// Test if arrange() was called previously and gave a successful result.
     bool is_arranged() const { return bed_idx != UNARRANGED; }
@@ -89,10 +113,26 @@ struct ArrangeParams {
     bool parallel = true;
 
     bool allow_rotations = false;
+
+    //BBS: add specific arrange params
+    bool  allow_multi_materials_on_same_plate = true;
+    bool  avoid_extrusion_cali_region         = true;
+    bool  is_seq_print                        = false;
+    float bed_shrink_x = 0;
+    float bed_shrink_y = 0;
+    float brim_skirt_distance = 0;
+    float clearance_height_to_rod = 0;
+    float clearance_height_to_lid = 0;
+    float cleareance_radius = 0;
+
+    ArrangePolygons excluded_regions;   // regions cant't be used
+    ArrangePolygons nonprefered_regions; // regions can be used but not prefered
     
     /// Progress indicator callback called when an object gets packed. 
     /// The unsigned argument is the number of items remaining to pack.
-    std::function<void(unsigned)> progressind;
+    std::function<void(unsigned, std::string)> progressind = [](unsigned st, std::string str = "") {
+        std::cout << "st=" << st << ", " << str << std::endl;
+    };
 
     std::function<void(const ArrangePolygon &)> on_packed;
     

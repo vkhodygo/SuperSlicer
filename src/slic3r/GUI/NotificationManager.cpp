@@ -1,13 +1,11 @@
 #include "NotificationManager.hpp"
 
-#include "HintNotification.hpp"
 #include "GUI.hpp"
 #include "ImGuiWrapper.hpp"
-#include "PrintHostDialogs.hpp"
 #include "wxExtensions.hpp"
 #include "ObjectDataViewModel.hpp"
-#include "libslic3r/Config.hpp"
-#include "../Utils/PrintHost.hpp"
+#include "GUI_ObjectList.hpp"
+#include "ParamsPanel.hpp"
 #include "libslic3r/Config.hpp"
 #include "format.hpp"
 
@@ -20,6 +18,8 @@
 
 #include <wx/glcanvas.h>
 
+#include "GUI_App.hpp"
+
 static constexpr float GAP_WIDTH = 10.0f;
 static constexpr float SPACE_RIGHT_PANEL = 10.0f;
 static constexpr float FADING_OUT_DURATION = 2.0f;
@@ -29,7 +29,7 @@ static constexpr int   FADING_OUT_TIMEOUT = 100;
 namespace Slic3r {
 namespace GUI {
 
-wxDEFINE_EVENT(EVT_EJECT_DRIVE_NOTIFICAION_CLICKED, EjectDriveNotificationClickedEvent);
+//wxDEFINE_EVENT(EVT_EJECT_DRIVE_NOTIFICAION_CLICKED, EjectDriveNotificationClickedEvent);
 wxDEFINE_EVENT(EVT_EXPORT_GCODE_NOTIFICAION_CLICKED, ExportGcodeNotificationClickedEvent);
 wxDEFINE_EVENT(EVT_PRESET_UPDATE_AVAILABLE_CLICKED, PresetUpdateAvailableClickedEvent);
 
@@ -107,7 +107,7 @@ namespace {
 
 #if 1
 // Reuse ImGUI Windows.
-int NotificationManager::NotificationIDProvider::allocate_id() 
+int NotificationManager::NotificationIDProvider::allocate_id()
 {
 	int id;
 	if (m_released_ids.empty())
@@ -118,7 +118,7 @@ int NotificationManager::NotificationIDProvider::allocate_id()
 	}
 	return id;
 }
-void NotificationManager::NotificationIDProvider::release_id(int id) 
+void NotificationManager::NotificationIDProvider::release_id(int id)
 {
 	m_released_ids.push_back(id);
 }
@@ -137,9 +137,71 @@ NotificationManager::PopNotification::PopNotification(const NotificationData &n,
 	, m_text2               (n.text2)
 	, m_evt_handler         (evt_handler)
 	, m_notification_start  (GLCanvas3D::timestamp_now())
-{}
+{
+    m_ErrorColor  = ImVec4(0.9, 0.36, 0.36, 1);
+    m_WarnColor   = ImVec4(0.99, 0.69, 0.455, 1);
+    m_NormalColor = ImVec4(0.03, 0.6, 0.18, 1);
 
-void NotificationManager::PopNotification::render(GLCanvas3D& canvas, float initial_y, bool move_from_overlay, float overlay_width)
+	m_CurrentColor = m_NormalColor;   //Default
+
+	m_WindowBkgColor = ImVec4(1, 1, 1, 1);
+    m_TextColor      = ImVec4(.2f, .2f, .2f, 1.0f);
+    m_HyperTextColor = ImVec4(0.03, 0.6, 0.18, 1);
+
+	m_WindowRadius = 4;
+}
+
+
+void NotificationManager::PopNotification::use_bbl_theme()
+{
+    ImGuiStyle &OldStyle         = ImGui::GetStyle();
+
+    m_DefaultTheme.mWindowPadding = OldStyle.WindowPadding;
+    m_DefaultTheme.mWindowBkg     = OldStyle.Colors[ImGuiCol_WindowBg];
+    m_DefaultTheme.mBorderColor   = OldStyle.Colors[ImGuiCol_Border];
+    m_DefaultTheme.mTextColor     = OldStyle.Colors[ImGuiCol_Text];
+    m_DefaultTheme.mWindowRound   = OldStyle.WindowRounding;
+
+    OldStyle.WindowPadding             = ImVec2(0, 0);
+    OldStyle.WindowRounding            = m_WindowRadius;
+
+	if (m_data.level == NotificationLevel::ErrorNotificationLevel)
+        m_CurrentColor = m_ErrorColor;
+    else if (m_data.level == NotificationLevel::WarningNotificationLevel)
+        m_CurrentColor = m_WarnColor;
+    else {
+        if (m_data.use_warn_color)
+            m_CurrentColor = m_WarnColor;
+        else
+            m_CurrentColor = m_NormalColor;
+    }
+
+	//OldStyle.Colors[ImGuiCol_Border] = m_CurrentColor;
+
+ //   OldStyle.Colors[ImGuiCol_WindowBg] = m_WindowBkgColor;
+ //   OldStyle.Colors[ImGuiCol_Text]     = m_TextColor;
+
+	push_style_color(ImGuiCol_Border, m_CurrentColor, true, m_current_fade_opacity);
+    push_style_color(ImGuiCol_WindowBg, m_WindowBkgColor, true, m_current_fade_opacity);
+    push_style_color(ImGuiCol_Text, m_TextColor, true, m_current_fade_opacity);
+}
+
+
+void NotificationManager::PopNotification::restore_default_theme()
+{
+    ImGuiStyle &OldStyle = ImGui::GetStyle();
+
+    OldStyle.WindowPadding             = m_DefaultTheme.mWindowPadding;
+    OldStyle.WindowRounding            = m_DefaultTheme.mWindowRound;
+
+	ImGui::PopStyleColor(3);
+	//OldStyle.Colors[ImGuiCol_WindowBg] = m_DefaultTheme.mWindowBkg;
+ //   OldStyle.Colors[ImGuiCol_Text]     = m_DefaultTheme.mTextColor;
+ //   OldStyle.Colors[ImGuiCol_Border]   = m_DefaultTheme.mBorderColor;
+}
+
+
+void NotificationManager::PopNotification::render(GLCanvas3D& canvas, float initial_y, bool move_from_overlay, float overlay_width, float right_margin)
 {
 
 	if (m_state == EState::Unknown)
@@ -159,7 +221,7 @@ void NotificationManager::PopNotification::render(GLCanvas3D& canvas, float init
 	Size          cnv_size = canvas.get_canvas_size();
 	ImGuiWrapper& imgui = *wxGetApp().imgui();
 	ImVec2        mouse_pos = ImGui::GetMousePos();
-	float         right_gap = SPACE_RIGHT_PANEL + (move_from_overlay ? overlay_width + m_line_height * 5 : 0);
+    float         right_gap  = right_margin + (move_from_overlay ? overlay_width + m_line_height * 5 : 0);
 	bool          fading_pop = false;
 
 	if (m_line_height != ImGui::CalcTextSize("A").y)
@@ -174,19 +236,19 @@ void NotificationManager::PopNotification::render(GLCanvas3D& canvas, float init
 	imgui.set_next_window_pos(win_pos.x, win_pos.y, ImGuiCond_Always, 1.0f, 0.0f);
 	imgui.set_next_window_size(m_window_width, m_window_height, ImGuiCond_Always);
 
-	
+
 	// find if hovered FIXME:  do it only in update state?
 	if (m_state == EState::Hovered) {
 		m_state = EState::Unknown;
-		init(); 
+		init();
 	}
-	
+
 	if (mouse_pos.x < win_pos.x && mouse_pos.x > win_pos.x - m_window_width && mouse_pos.y > win_pos.y && mouse_pos.y < win_pos.y + m_window_height) {
 		// Uncomment if imgui window focus is needed on hover. I cant find any case.
 		//ImGui::SetNextWindowFocus();
 		set_hovered();
 	}
-	
+
 	// color change based on fading out
 	if (m_state == EState::FadingOut) {
 		push_style_color(ImGuiCol_WindowBg, ImGui::GetStyleColorVec4(ImGuiCol_WindowBg), true, m_current_fade_opacity);
@@ -194,26 +256,31 @@ void NotificationManager::PopNotification::render(GLCanvas3D& canvas, float init
 		push_style_color(ImGuiCol_ButtonHovered, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered), true, m_current_fade_opacity);
 		fading_pop = true;
 	}
-	
+
 	bool bgrnd_color_pop = push_background_color();
-	
-	
+
 	// name of window indentifies window - has to be unique string
 	if (m_id == 0)
 		m_id = m_id_provider.allocate_id();
 	std::string name = "!!Ntfctn" + std::to_string(m_id);
-	
+
+    use_bbl_theme();
+
 	if (imgui.begin(name, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
 		ImVec2 win_size = ImGui::GetWindowSize();
+
+		bbl_render_left_sign(imgui, win_size.x, win_size.y, win_pos.x, win_pos.y);
 
 		render_left_sign(imgui);
 		render_text(imgui, win_size.x, win_size.y, win_pos.x, win_pos.y);
 		render_close_button(imgui, win_size.x, win_size.y, win_pos.x, win_pos.y);
-		m_minimize_b_visible = false;
-		if (m_multiline && m_lines_count > 3)
+        m_minimize_b_visible = false;
+        if (m_multiline && m_lines_count > 3)
 			render_minimize_button(imgui, win_pos.x, win_pos.y);
 	}
 	imgui.end();
+
+	restore_default_theme();
 
 	if (bgrnd_color_pop)
 		ImGui::PopStyleColor();
@@ -241,27 +308,28 @@ bool NotificationManager::PopNotification::push_background_color()
 		push_style_color(ImGuiCol_WindowBg, backcolor, m_state == EState::FadingOut, m_current_fade_opacity);
 		return true;
 	}
+
 	return false;
 }
 void NotificationManager::PopNotification::count_spaces()
 {
-	//determine line width 
+	//determine line width
 	m_line_height = ImGui::CalcTextSize("A").y;
 
 	m_left_indentation = m_line_height;
-	if (m_data.level == NotificationLevel::ErrorNotificationLevel 
-		|| m_data.level == NotificationLevel::WarningNotificationLevel
-		|| m_data.level == NotificationLevel::PrintInfoNotificationLevel
-		|| m_data.level == NotificationLevel::PrintInfoShortNotificationLevel) {
-		std::string text;
-		text = (m_data.level == NotificationLevel::ErrorNotificationLevel ? ImGui::ErrorMarker : ImGui::WarningMarker);
-		float picture_width = ImGui::CalcTextSize(text.c_str()).x;
-		m_left_indentation = picture_width + m_line_height / 2;
-	}
+	//if (m_data.level == NotificationLevel::ErrorNotificationLevel
+	//	|| m_data.level == NotificationLevel::WarningNotificationLevel
+	//	|| m_data.level == NotificationLevel::PrintInfoNotificationLevel
+	//	|| m_data.level == NotificationLevel::PrintInfoShortNotificationLevel) {
+	//	std::string text;
+	//	text = (m_data.level == NotificationLevel::ErrorNotificationLevel ? ImGui::ErrorMarker : ImGui::WarningMarker);
+	//	float picture_width = ImGui::CalcTextSize(text.c_str()).x;
+	//	m_left_indentation = picture_width + m_line_height / 2;
+	//}
 	m_window_width_offset = m_left_indentation + m_line_height * 3.f;
 	m_window_width = m_line_height * 25;
 }
- 
+
 void NotificationManager::PopNotification::count_lines()
 {
 	std::string text		= m_text1;
@@ -298,13 +366,24 @@ void NotificationManager::PopNotification::count_lines()
 				if (ImGui::CalcTextSize(text.substr(last_end, next_space - last_end).c_str()).x > m_window_width - m_window_width_offset ||
 					ImGui::CalcTextSize(text.substr(last_end, next_space - last_end).c_str()).x < (m_window_width - m_window_width_offset) / 4 * 3
 					) {
-					float width_of_a = ImGui::CalcTextSize("a").x;
-					int letter_count = (int)((m_window_width - m_window_width_offset) / width_of_a);
-					while (last_end + letter_count < text.size() && ImGui::CalcTextSize(text.substr(last_end, letter_count).c_str()).x < m_window_width - m_window_width_offset) {
+					//BBS
+					wxString wx_text = from_u8(text.substr(last_end, text.length() - last_end).c_str());
+                    float    width_of_char = ImGui::CalcTextSize("a").x;
+                    int letter_count = (int) ((m_window_width - m_window_width_offset) / width_of_char) / 2;	// give a predict value of char count
+					int output_count = 0;
+					while (true) {
+                        if (letter_count >= wx_text.size())
+							break;
+                        float used_space = ImGui::CalcTextSize(into_u8(wx_text.SubString(0, letter_count)).c_str()).x;
+                        if (used_space > m_window_width - m_window_width_offset)
+							break;
 						letter_count++;
 					}
-					m_endlines.push_back(last_end + letter_count);
-					last_end += letter_count;
+					if (letter_count > 0) {
+						output_count = into_u8(wx_text.SubString(0, letter_count - 1)).size();
+                    }
+                    m_endlines.push_back(last_end + output_count);
+                    last_end += output_count;
 				} else {
 					m_endlines.push_back(next_space);
 					last_end = next_space + 1;
@@ -347,7 +426,7 @@ void NotificationManager::PopNotification::init()
 		m_state = EState::Shown;
 }
 void NotificationManager::PopNotification::set_next_window_size(ImGuiWrapper& imgui)
-{ 
+{
 	m_window_height = m_multiline ?
 		std::max(m_lines_count, (size_t)2) * m_line_height :
 		2 * m_line_height;
@@ -365,7 +444,7 @@ void NotificationManager::PopNotification::render_text(ImGuiWrapper& imgui, cons
 	for (size_t i = 0; i < (m_multiline ? m_endlines.size() : std::min(m_endlines.size(), (size_t)2)); i++) {
 		assert(m_endlines.size() > i && m_text1.size() >= m_endlines[i]);
 		line.clear();
-		ImGui::SetCursorPosX(x_offset);     
+		ImGui::SetCursorPosX(x_offset);
 		ImGui::SetCursorPosY(starting_y + i * shift_y);
 		if (m_endlines.size() > i && m_text1.size() >= m_endlines[i]) {
 			if (i == 1 && m_endlines.size() > 2 && !m_multiline) {
@@ -383,6 +462,7 @@ void NotificationManager::PopNotification::render_text(ImGuiWrapper& imgui, cons
 			last_end = m_endlines[i];
 			if (m_text1.size() > m_endlines[i])
 				last_end += (m_text1[m_endlines[i]] == '\n' || m_text1[m_endlines[i]] == ' ' ? 1 : 0);
+
 			imgui.text(line.c_str());
 		}
 	}
@@ -404,10 +484,10 @@ void NotificationManager::PopNotification::render_hypertext(ImGuiWrapper& imgui,
 	ImVec2 part_size = ImGui::CalcTextSize(text.c_str());
 	ImGui::SetCursorPosX(text_x -4);
 	ImGui::SetCursorPosY(text_y -5);
-	ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.0f, .0f, .0f, .0f));
-	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(.0f, .0f, .0f, .0f));
-	ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(.0f, .0f, .0f, .0f));
-	if (imgui.button("   ", part_size.x + 6, part_size.y + 10))
+	ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.4f, .4f, .4f, 0.0f));
+	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(.5f, .5f, .5f, 0.0f));
+	ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(.7f, .7f, .7f, 0.0f));
+	if (imgui.button("      ", part_size.x + 6, part_size.y + 10))
 	{
 		if (more)
 		{
@@ -421,12 +501,12 @@ void NotificationManager::PopNotification::render_hypertext(ImGuiWrapper& imgui,
 	ImGui::PopStyleColor(3);
 
 	//hover color
-	ImVec4 orange_color = ImVec4(.99f, .313f, .0f, 1.0f);
+	ImVec4 HyperColor = m_HyperTextColor;
 	if (ImGui::IsItemHovered(ImGuiHoveredFlags_RectOnly))
-		orange_color.y += 0.2f;
+		HyperColor.y += 0.1f;
 
 	//text
-	push_style_color(ImGuiCol_Text, orange_color, m_state == EState::FadingOut, m_current_fade_opacity);
+    push_style_color(ImGuiCol_Text, HyperColor, m_state == EState::FadingOut, m_current_fade_opacity);
 	ImGui::SetCursorPosX(text_x);
 	ImGui::SetCursorPosY(text_y);
 	imgui.text(text.c_str());
@@ -437,14 +517,16 @@ void NotificationManager::PopNotification::render_hypertext(ImGuiWrapper& imgui,
 	lineEnd.y -= 2;
 	ImVec2 lineStart = lineEnd;
 	lineStart.x = ImGui::GetItemRectMin().x;
-	ImGui::GetWindowDrawList()->AddLine(lineStart, lineEnd, IM_COL32((int)(orange_color.x * 255), (int)(orange_color.y * 255), (int)(orange_color.z * 255), (int)(orange_color.w * 255.f * (m_state == EState::FadingOut ? m_current_fade_opacity : 1.f))));
+    ImGui::GetWindowDrawList()->AddLine(lineStart, lineEnd,
+                                        IM_COL32((int) (HyperColor.x * 255), (int) (HyperColor.y * 255), (int) (HyperColor.z * 255),
+                                                 (int) (HyperColor.w * 255.f * (m_state == EState::FadingOut ? m_current_fade_opacity : 1.f))));
 
 }
 
 void NotificationManager::PopNotification::render_close_button(ImGuiWrapper& imgui, const float win_size_x, const float win_size_y, const float win_pos_x, const float win_pos_y)
 {
 	ImVec2 win_size(win_size_x, win_size_y);
-	ImVec2 win_pos(win_pos_x, win_pos_y); 
+	ImVec2 win_pos(win_pos_x, win_pos_y);
 	ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.0f, .0f, .0f, .0f));
 	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(.0f, .0f, .0f, .0f));
 	push_style_color(ImGuiCol_Text, ImVec4(1.f, 1.f, 1.f, 1.f), m_state == EState::FadingOut, m_current_fade_opacity);
@@ -454,17 +536,23 @@ void NotificationManager::PopNotification::render_close_button(ImGuiWrapper& img
 
 	std::string button_text;
 	button_text = ImGui::CloseNotifButton;
-	
-	if (ImGui::IsMouseHoveringRect(ImVec2(win_pos.x - win_size.x / 10.f, win_pos.y),
-		                           ImVec2(win_pos.x, win_pos.y + win_size.y - ( m_minimize_b_visible ? 2 * m_line_height : 0)),
-		                           true))
+    //button_text = ImGui::PreferencesButton;
+
+	//if (ImGui::IsMouseHoveringRect(ImVec2(win_pos.x - win_size.x / 10.f, win_pos.y),
+	//	                           ImVec2(win_pos.x, win_pos.y + win_size.y - ( m_minimize_b_visible ? 2 * m_line_height : 0)),
+	//	                           true))
+    if (ImGui::IsMouseHoveringRect(ImVec2(win_pos.x - win_size.x / 10.f, win_pos.y), ImVec2(win_pos.x, win_pos.y + 2 * m_line_height+10),true))
 	{
 		button_text = ImGui::CloseNotifHoverButton;
 	}
 	ImVec2 button_pic_size = ImGui::CalcTextSize(button_text.c_str());
 	ImVec2 button_size(button_pic_size.x * 1.25f, button_pic_size.y * 1.25f);
 	ImGui::SetCursorPosX(win_size.x - m_line_height * 2.75f);
-	ImGui::SetCursorPosY(win_size.y / 2 - button_size.y);
+	//ImGui::SetCursorPosY(win_size.y / 2 - button_size.y);
+    if (m_minimize_b_visible)
+		ImGui::SetCursorPosY(0);
+    else
+        ImGui::SetCursorPosY(win_size.y / 2 - button_size.y);
 	if (imgui.button(button_text.c_str(), button_size.x, button_size.y))
 	{
 		close();
@@ -477,24 +565,40 @@ void NotificationManager::PopNotification::render_close_button(ImGuiWrapper& img
 	{
 		close();
 	}
+
 	ImGui::PopStyleColor(5);
+}
+
+//void NotificationManager::PopNotification::render_multiline(ImGuiWrapper &imgui, const float win_pos_x, const float win_pos_y)
+//{
+//	if (m_data.type == NotificationType::BBLObjectInfo)
+//	{
+//		set_Multiline(true);
+//	}
+//}
+
+void NotificationManager::PopNotification::bbl_render_left_sign(ImGuiWrapper &imgui, const float win_size_x, const float win_size_y, const float win_pos_x, const float win_pos_y)
+{
+    ImDrawList *draw_list = ImGui::GetWindowDrawList();
+    draw_list->AddRectFilled(ImVec2(win_pos_x - win_size_x, win_pos_y), ImVec2(win_pos_x - win_size_x + m_WindowRadius * 2, win_pos_y + win_size_y),ImGui::GetColorU32(ImVec4(m_CurrentColor.x, m_CurrentColor.y, m_CurrentColor.z,m_current_fade_opacity)), m_WindowRadius);
+    draw_list->AddRectFilled(ImVec2(win_pos_x - win_size_x-m_WindowRadius, win_pos_y), ImVec2(win_pos_x - win_size_x + 10, win_pos_y + win_size_y),ImGui::GetColorU32(ImVec4(m_CurrentColor.x, m_CurrentColor.y, m_CurrentColor.z, m_current_fade_opacity)), 0);
 }
 
 void NotificationManager::PopNotification::render_left_sign(ImGuiWrapper& imgui)
 {
-	if (m_data.level == NotificationLevel::ErrorNotificationLevel || m_data.level == NotificationLevel::WarningNotificationLevel) {
-		std::string text;
-		text = (m_data.level == NotificationLevel::ErrorNotificationLevel ? ImGui::ErrorMarker : ImGui::WarningMarker);
-		ImGui::SetCursorPosX(m_line_height / 3);
-		ImGui::SetCursorPosY(m_window_height / 2 - m_line_height);
-		imgui.text(text.c_str());
-	} else if (m_data.level == NotificationLevel::PrintInfoNotificationLevel || m_data.level == NotificationLevel::PrintInfoShortNotificationLevel) {
-		std::wstring text;
-		text = ImGui::InfoMarker;
-		ImGui::SetCursorPosX(m_line_height / 3);
-		ImGui::SetCursorPosY(m_window_height / 2 - m_line_height);
-		imgui.text(text.c_str());
-	}
+	//if (m_data.level == NotificationLevel::ErrorNotificationLevel || m_data.level == NotificationLevel::WarningNotificationLevel) {
+	//	std::string text;
+	//	text = (m_data.level == NotificationLevel::ErrorNotificationLevel ? ImGui::ErrorMarker : ImGui::WarningMarker);
+	//	ImGui::SetCursorPosX(m_line_height / 3);
+	//	ImGui::SetCursorPosY(m_window_height / 2 - m_line_height);
+	//	imgui.text(text.c_str());
+	//} else if (m_data.level == NotificationLevel::PrintInfoNotificationLevel || m_data.level == NotificationLevel::PrintInfoShortNotificationLevel) {
+	//	std::wstring text;
+	//	text = ImGui::InfoMarker;
+	//	ImGui::SetCursorPosX(m_line_height / 3);
+	//	ImGui::SetCursorPosY(m_window_height / 2 - m_line_height);
+	//	imgui.text(text.c_str());
+	//}
 }
 void NotificationManager::PopNotification::render_minimize_button(ImGuiWrapper& imgui, const float win_pos_x, const float win_pos_y)
 {
@@ -504,13 +608,13 @@ void NotificationManager::PopNotification::render_minimize_button(ImGuiWrapper& 
 	push_style_color(ImGuiCol_Text, ImVec4(1.f, 1.f, 1.f, 1.f), m_state == EState::FadingOut, m_current_fade_opacity);
 	push_style_color(ImGuiCol_TextSelectedBg, ImVec4(0, .75f, .75f, 1.f), m_state == EState::FadingOut, m_current_fade_opacity);
 
-	
+
 	//button - if part if treggered
 	std::string button_text;
 	button_text = ImGui::MinimalizeButton;
 	if (ImGui::IsMouseHoveringRect(ImVec2(win_pos_x - m_window_width / 10.f, win_pos_y + m_window_height - 2 * m_line_height + 1),
 		ImVec2(win_pos_x, win_pos_y + m_window_height),
-		true)) 
+		true))
 	{
 		button_text = ImGui::MinimalizeHoverButton;
 	}
@@ -522,7 +626,7 @@ void NotificationManager::PopNotification::render_minimize_button(ImGuiWrapper& 
 	{
 		m_multiline = false;
 	}
-	
+
 	ImGui::PopStyleColor(5);
 	m_minimize_b_visible = true;
 }
@@ -537,9 +641,21 @@ void NotificationManager::PopNotification::update(const NotificationData& n)
 	m_text1          = n.text1;
 	m_hypertext      = n.hypertext;
     m_text2          = n.text2;
+    const_cast<NotificationData&>(m_data).callback	 = n.callback;
 	init();
 }
-bool NotificationManager::PopNotification::compare_text(const std::string& text) const 
+
+void NotificationManager::PopNotification::append(const std::string& append_str)
+{
+	m_text1            = m_text1 + "\n" + append_str;
+	//m_hypertext      = n.hypertext;
+	//m_text2          = n.text2;
+	//const_cast<NotificationData&>(m_data).callback	 = n.callback;
+	init();
+	m_multiline        = false;
+}
+
+bool NotificationManager::PopNotification::compare_text(const std::string& text) const
 {
 	std::wstring wt1 = boost::nowide::widen(m_text1);
 	std::wstring wt2 = boost::nowide::widen(text);
@@ -571,8 +687,8 @@ bool NotificationManager::PopNotification::update_state(bool paused, const int64
 		m_current_fade_opacity = 1.0f;
 	}
 
-	// reset timers - hovered state is set in render 
-	if (m_state == EState::Hovered) { 
+	// reset timers - hovered state is set in render
+	if (m_state == EState::Hovered) {
 		m_state = EState::Unknown;
 		init();
 	// Timers when not fading
@@ -583,7 +699,7 @@ bool NotificationManager::PopNotification::update_state(bool paused, const int64
 			m_fading_start			= now;
 		} else {
 			m_next_render = get_duration() * 1000 - up_time;
-		}	
+		}
 	}
 	// Timers when fading
 	if (m_state == EState::FadingOut && !paused) {
@@ -620,16 +736,16 @@ void NotificationManager::ExportFinishedNotification::count_spaces()
 	{
 		return PopNotification::count_spaces();
 	}
-	//determine line width 
+	//determine line width
 	m_line_height = ImGui::CalcTextSize("A").y;
 
 	m_left_indentation = m_line_height;
-	if (m_data.level == NotificationLevel::ErrorNotificationLevel || m_data.level == NotificationLevel::WarningNotificationLevel) {
-		std::string text;
-		text = (m_data.level == NotificationLevel::ErrorNotificationLevel ? ImGui::ErrorMarker : ImGui::WarningMarker);
-		float picture_width = ImGui::CalcTextSize(text.c_str()).x;
-		m_left_indentation = picture_width + m_line_height / 2;
-	}
+	//if (m_data.level == NotificationLevel::ErrorNotificationLevel || m_data.level == NotificationLevel::WarningNotificationLevel) {
+	//	std::string text;
+	//	text = (m_data.level == NotificationLevel::ErrorNotificationLevel ? ImGui::ErrorMarker : ImGui::WarningMarker);
+	//	float picture_width = ImGui::CalcTextSize(text.c_str()).x;
+	//	m_left_indentation = picture_width + m_line_height / 2;
+	//}
 	//TODO count this properly
 	m_window_width_offset = m_left_indentation + m_line_height * (m_to_removable ? 6.f : 3.f);
 	m_window_width = m_line_height * 25;
@@ -671,11 +787,11 @@ void NotificationManager::ExportFinishedNotification::render_text(ImGuiWrapper& 
 void NotificationManager::ExportFinishedNotification::render_close_button(ImGuiWrapper& imgui, const float win_size_x, const float win_size_y, const float win_pos_x, const float win_pos_y)
 {
 	PopNotification::render_close_button(imgui, win_size_x, win_size_y, win_pos_x, win_pos_y);
-	if(m_to_removable && ! m_eject_pending)
-		render_eject_button(imgui, win_size_x, win_size_y, win_pos_x, win_pos_y);
+	//if(m_to_removable && ! m_eject_pending)
+	//	render_eject_button(imgui, win_size_x, win_size_y, win_pos_x, win_pos_y);
 }
 
-void NotificationManager::ExportFinishedNotification::render_eject_button(ImGuiWrapper& imgui, const float win_size_x, const float win_size_y, const float win_pos_x, const float win_pos_y)
+/*void NotificationManager::ExportFinishedNotification::render_eject_button(ImGuiWrapper& imgui, const float win_size_x, const float win_size_y, const float win_pos_x, const float win_pos_y)
 {
 	ImVec2 win_size(win_size_x, win_size_y);
 	ImVec2 win_pos(win_pos_x, win_pos_y);
@@ -687,7 +803,7 @@ void NotificationManager::ExportFinishedNotification::render_eject_button(ImGuiW
 
 	std::string button_text;
 	button_text = ImGui::EjectButton;
-	
+
     if (ImGui::IsMouseHoveringRect(ImVec2(win_pos.x - m_line_height * 5.f, win_pos.y),
 		ImVec2(win_pos.x - m_line_height * 2.5f, win_pos.y + win_size.y),
 		true))
@@ -701,10 +817,10 @@ void NotificationManager::ExportFinishedNotification::render_eject_button(ImGuiW
 			imgui.text(_u8L("Eject drive") + " " + GUI::shortkey_ctrl_prefix() + "T");
 			ImGui::EndTooltip();
 			ImGui::PopStyleColor();
-		} 
+		}
 		if (m_hover_time == 0)
 			m_hover_time = time_now;
-	} else 
+	} else
 		m_hover_time = 0;
 
 	ImVec2 button_pic_size = ImGui::CalcTextSize(button_text.c_str());
@@ -730,7 +846,7 @@ void NotificationManager::ExportFinishedNotification::render_eject_button(ImGuiW
 		on_eject_click();
 	}
 	ImGui::PopStyleColor(5);
-}
+}*/
 bool NotificationManager::ExportFinishedNotification::on_text_click()
 {
 	open_folder(m_export_dir_path);
@@ -798,12 +914,14 @@ void NotificationManager::ProgressBarNotification::render_text(ImGuiWrapper& img
 		render_bar(imgui, win_size_x, win_size_y, win_pos_x, win_pos_y);
 	}
 
-	
+
 }
 void NotificationManager::ProgressBarNotification::render_bar(ImGuiWrapper& imgui, const float win_size_x, const float win_size_y, const float win_pos_x, const float win_pos_y)
 {
-	ImVec4 orange_color			= ImVec4(.99f, .313f, .0f, 1.0f);
-	ImVec4 gray_color			= ImVec4(.34f, .34f, .34f, 1.0f);
+	//ImVec4 orange_color			= ImVec4(.99f, .313f, .0f, 1.0f);
+	//ImVec4 gray_color			= ImVec4(.34f, .34f, .34f, 1.0f);
+    ImVec4 orange_color         = m_NormalColor;
+    ImVec4 gray_color           = ImVec4(.7f, .7f, .7f, 1.0f);
 	ImVec2 lineEnd				= ImVec2(win_pos_x - m_window_width_offset, win_pos_y + win_size_y / 2 + (m_multiline ? m_line_height / 2 : 0));
 	ImVec2 lineStart			= ImVec2(win_pos_x - win_size_x + m_left_indentation, win_pos_y + win_size_y / 2 + (m_multiline ? m_line_height / 2 : 0));
 	ImVec2 midPoint				= ImVec2(lineStart.x + (lineEnd.x - lineStart.x) * m_percentage, lineStart.y);
@@ -819,159 +937,17 @@ void NotificationManager::ProgressBarNotification::render_bar(ImGuiWrapper& imgu
 		imgui.text(text.c_str());
 	}
 }
-//------PrintHostUploadNotification----------------
-void NotificationManager::PrintHostUploadNotification::init()
-{
-	ProgressBarNotification::init();
-	if (m_state == EState::NotFading && m_uj_state == UploadJobState::PB_COMPLETED)
-		m_state = EState::Shown;
-}
-void NotificationManager::PrintHostUploadNotification::count_spaces()
-{
-	//determine line width 
-	m_line_height = ImGui::CalcTextSize("A").y;
-
-	m_left_indentation = m_line_height;
-	if (m_uj_state == UploadJobState::PB_ERROR) {
-		std::string text;
-		text = (m_data.level == NotificationLevel::ErrorNotificationLevel ? ImGui::ErrorMarker : ImGui::WarningMarker);
-		float picture_width = ImGui::CalcTextSize(text.c_str()).x;
-		m_left_indentation = picture_width + m_line_height / 2;
-	}
-	m_window_width_offset = m_line_height * 6; //(m_has_cancel_button ? 6 : 4);
-	m_window_width = m_line_height * 25;
-}
-bool NotificationManager::PrintHostUploadNotification::push_background_color()
-{
-
-	if (m_uj_state == UploadJobState::PB_ERROR) {
-		ImVec4 backcolor = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
-		backcolor.x += 0.3f;
-		push_style_color(ImGuiCol_WindowBg, backcolor, m_state == EState::FadingOut, m_current_fade_opacity);
-		return true;
-	}
-	return false;
-}
-void NotificationManager::PrintHostUploadNotification::set_percentage(float percent)
-{
-	m_percentage = percent;
-	if (percent >= 1.0f) {
-		m_uj_state = UploadJobState::PB_COMPLETED;
-		m_has_cancel_button = false;
-		init();
-	} else if (percent < 0.0f) {
-		error();
-	} else {
-		m_uj_state = UploadJobState::PB_PROGRESS;
-		m_has_cancel_button = true;
-	}
-}
-void NotificationManager::PrintHostUploadNotification::render_bar(ImGuiWrapper& imgui, const float win_size_x, const float win_size_y, const float win_pos_x, const float win_pos_y)
-{
-	std::string text;
-	switch (m_uj_state) {
-	case Slic3r::GUI::NotificationManager::PrintHostUploadNotification::UploadJobState::PB_PROGRESS:
-	{
-		ProgressBarNotification::render_bar(imgui, win_size_x, win_size_y, win_pos_x, win_pos_y);
-		float uploaded = m_file_size * m_percentage;
-		std::stringstream stream;
-		stream << std::fixed << std::setprecision(2) << (int)(m_percentage * 100) << "% - " << uploaded << " of " << m_file_size << "MB uploaded";
-		text = stream.str();
-		ImGui::SetCursorPosX(m_left_indentation);
-		ImGui::SetCursorPosY(win_size_y / 2 + win_size_y / 6 - (m_multiline ? 0 : m_line_height / 4));
-		break;
-	}
-	case Slic3r::GUI::NotificationManager::PrintHostUploadNotification::UploadJobState::PB_ERROR:
-		text = _u8L("ERROR");
-		ImGui::SetCursorPosX(m_left_indentation);
-		ImGui::SetCursorPosY(win_size_y / 2 + win_size_y / 6 - (m_multiline ? m_line_height / 4 : m_line_height / 2));
-		break;
-	case Slic3r::GUI::NotificationManager::PrintHostUploadNotification::UploadJobState::PB_CANCELLED:
-		text = _u8L("CANCELED");
-		ImGui::SetCursorPosX(m_left_indentation);
-		ImGui::SetCursorPosY(win_size_y / 2 + win_size_y / 6 - (m_multiline ? m_line_height / 4 : m_line_height / 2));
-		break;
-	case Slic3r::GUI::NotificationManager::PrintHostUploadNotification::UploadJobState::PB_COMPLETED:
-		text = _u8L("COMPLETED");
-		ImGui::SetCursorPosX(m_left_indentation);
-		ImGui::SetCursorPosY(win_size_y / 2 + win_size_y / 6 - (m_multiline ? m_line_height / 4 : m_line_height / 2));
-		break;
-	}
-	
-	imgui.text(text.c_str());
-
-}
-void NotificationManager::PrintHostUploadNotification::render_left_sign(ImGuiWrapper& imgui)
-{
-	if (m_uj_state == UploadJobState::PB_ERROR) {
-		std::string text;
-		text = ImGui::ErrorMarker;
-		ImGui::SetCursorPosX(m_line_height / 3);
-		ImGui::SetCursorPosY(m_window_height / 2 - m_line_height);
-		imgui.text(text.c_str());
-	}
-}
-void NotificationManager::PrintHostUploadNotification::render_cancel_button(ImGuiWrapper& imgui, const float win_size_x, const float win_size_y, const float win_pos_x, const float win_pos_y)
-{
-	ImVec2 win_size(win_size_x, win_size_y);
-	ImVec2 win_pos(win_pos_x, win_pos_y);
-	ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(.0f, .0f, .0f, .0f));
-	ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(.0f, .0f, .0f, .0f));
-	push_style_color(ImGuiCol_Text, ImVec4(1.f, 1.f, 1.f, 1.f), m_state == EState::FadingOut, m_current_fade_opacity);
-	push_style_color(ImGuiCol_TextSelectedBg, ImVec4(0, .75f, .75f, 1.f), m_state == EState::FadingOut, m_current_fade_opacity);
-	ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(.0f, .0f, .0f, .0f));
-
-	std::string button_text;
-	button_text = ImGui::CancelButton;
-
-	if (ImGui::IsMouseHoveringRect(ImVec2(win_pos.x - m_line_height * 5.f, win_pos.y),
-		ImVec2(win_pos.x - m_line_height * 2.5f, win_pos.y + win_size.y),
-		true))
-	{
-		button_text = ImGui::CancelHoverButton;
-		// tooltip
-		long time_now = wxGetLocalTime();
-		if (m_hover_time > 0 && m_hover_time < time_now) {
-			ImGui::PushStyleColor(ImGuiCol_PopupBg, ImGuiWrapper::COL_WINDOW_BACKGROUND);
-			ImGui::BeginTooltip();
-			imgui.text(_u8L("Cancel upload") + " " + GUI::shortkey_ctrl_prefix() + "T");
-			ImGui::EndTooltip();
-			ImGui::PopStyleColor();
-		}
-		if (m_hover_time == 0)
-			m_hover_time = time_now;
-	}
-	else
-		m_hover_time = 0;
-
-	ImVec2 button_pic_size = ImGui::CalcTextSize(button_text.c_str());
-	ImVec2 button_size(button_pic_size.x * 1.25f, button_pic_size.y * 1.25f);
-	ImGui::SetCursorPosX(win_size.x - m_line_height * 5.0f);
-	ImGui::SetCursorPosY(win_size.y / 2 - button_size.y);
-	if (imgui.button(button_text.c_str(), button_size.x, button_size.y))
-	{
-		wxGetApp().printhost_job_queue().cancel(m_job_id - 1);
-	}
-
-	//invisible large button
-	ImGui::SetCursorPosX(win_size.x - m_line_height * 4.625f);
-	ImGui::SetCursorPosY(0);
-	if (imgui.button("  ", m_line_height * 2.f, win_size.y))
-	{
-		wxGetApp().printhost_job_queue().cancel(m_job_id - 1);
-	}
-	ImGui::PopStyleColor(5);
-}
 //------UpdatedItemsInfoNotification-------
 void NotificationManager::UpdatedItemsInfoNotification::count_spaces()
 {
-	//determine line width 
+	//determine line width
 	m_line_height = ImGui::CalcTextSize("A").y;
 
-	std::string text;
-	text =  ImGui::WarningMarker;
-	float picture_width = ImGui::CalcTextSize(text.c_str()).x;
-	m_left_indentation = picture_width + m_line_height / 2;
+	//std::string text;
+	//text =  ImGui::WarningMarker;
+	//float picture_width = ImGui::CalcTextSize(text.c_str()).x;
+	//m_left_indentation = picture_width + m_line_height / 2;
+    m_left_indentation = m_line_height;
 
 	m_window_width_offset = m_left_indentation + m_line_height * 3.f;
 	m_window_width = m_line_height * 25;
@@ -993,11 +969,12 @@ void NotificationManager::UpdatedItemsInfoNotification::add_type(InfoItemType ty
 		if ((*it).second == 0)
 			continue;
 		switch ((*it).first) {
-		case InfoItemType::CustomSupports:      text += format(_L_PLURAL("%1$d Object was loaded with custom supports.",		"%1$d Objects were loaded with custom supports.",		(*it).second), (*it).second) + "\n"; break;
-		case InfoItemType::CustomSeam:          text += format(_L_PLURAL("%1$d Object was loaded with custom seam.",			"%1$d Objects were loaded with custom seam.",			(*it).second), (*it).second) + "\n"; break;
-		case InfoItemType::MmuSegmentation:     text += format(_L_PLURAL("%1$d Object was loaded with multimaterial painting.", "%1$d Objects were loaded with multimaterial painting.",(*it).second), (*it).second) + "\n"; break;
-		case InfoItemType::VariableLayerHeight: text += format(_L_PLURAL("%1$d Object was loaded with variable layer height.",	"%1$d Objects were loaded with variable layer height.", (*it).second), (*it).second) + "\n"; break;
-		case InfoItemType::Sinking:             text += format(_L_PLURAL("%1$d Object was loaded with partial sinking.",		"%1$d Objects were loaded with partial sinking.",		(*it).second), (*it).second) + "\n"; break;
+		case InfoItemType::CustomSupports:      text += format(_L_PLURAL("%1$d Object has custom supports.",		"%1$d Objects have custom supports.",		(*it).second), (*it).second) + "\n"; break;
+		// BBS
+		//case InfoItemType::CustomSeam:          text += format(("%1$d Object has custom seam.",			"%1$d Objects have custom seam.",			(*it).second), (*it).second) + "\n"; break;
+		case InfoItemType::MmuSegmentation:     text += format(_L_PLURAL("%1$d Object has color painting.",			"%1$d Objects have color painting.",(*it).second), (*it).second) + "\n"; break;
+		// BBS
+		//case InfoItemType::Sinking:             text += format(("%1$d Object has partial sinking.",		"%1$d Objects have partial sinking.",		(*it).second), (*it).second) + "\n"; break;
 		default: BOOST_LOG_TRIVIAL(error) << "Unknown InfoItemType: " << (*it).second; break;
 		}
 	}
@@ -1005,25 +982,7 @@ void NotificationManager::UpdatedItemsInfoNotification::add_type(InfoItemType ty
 	NotificationData data { get_data().type, get_data().level , get_data().duration, text };
 	update(data);
 }
-// Uncomment to have different icon for every type of info, otherwise it will have standart cube with i.
-/*
-void NotificationManager::UpdatedItemsInfoNotification::render_left_sign(ImGuiWrapper& imgui)
-{
-	std::string text;
-	InfoItemType type = (m_types_and_counts.empty() ? InfoItemType::CustomSupports : m_types_and_counts[0].first);
-	switch (type) {
-	case InfoItemType::CustomSupports:      text = ImGui::CustomSupportsMarker; break;
-	case InfoItemType::CustomSeam:          text = ImGui::CustomSeamMarker; break;
-	case InfoItemType::MmuSegmentation:     text = ImGui::MmuSegmentationMarker; break;
-	case InfoItemType::VariableLayerHeight: text = ImGui::VarLayerHeightMarker; break;
-	case InfoItemType::Sinking:             text = ImGui::SinkingObjectMarker; break;
-	default: break;
-	}
-	ImGui::SetCursorPosX(m_line_height / 3);
-	ImGui::SetCursorPosY(m_window_height / 2 - m_line_height);
-	imgui.text(text.c_str());
-}
-*/
+
 //------SlicingProgressNotification
 void NotificationManager::SlicingProgressNotification::init()
 {
@@ -1043,7 +1002,7 @@ bool NotificationManager::SlicingProgressNotification::set_progress_state(float 
 		return true;//set_progress_state(SlicingProgressState::SP_CANCELLED);
 	else if (percent >= 1.f)
 		return set_progress_state(SlicingProgressState::SP_COMPLETED);
-	else 
+	else
 		return set_progress_state(SlicingProgressState::SP_PROGRESS, percent);
 }
 bool NotificationManager::SlicingProgressNotification::set_progress_state(NotificationManager::SlicingProgressNotification::SlicingProgressState state, float percent/* = 0.f*/)
@@ -1051,12 +1010,19 @@ bool NotificationManager::SlicingProgressNotification::set_progress_state(Notifi
 	switch (state)
 	{
 	case Slic3r::GUI::NotificationManager::SlicingProgressNotification::SlicingProgressState::SP_NO_SLICING:
+        m_state = EState::Hidden;
+        set_percentage(-1);
+        m_has_print_info = false;
+        set_export_possible(false);
+        m_sp_state             = state;
+        return true;
 	case Slic3r::GUI::NotificationManager::SlicingProgressNotification::SlicingProgressState::SP_BEGAN:
 		m_state = EState::Hidden;
 		set_percentage(-1);
 		m_has_print_info = false;
 		set_export_possible(false);
 		m_sp_state = state;
+        m_current_fade_opacity = 1;
 		return true;
 	case Slic3r::GUI::NotificationManager::SlicingProgressNotification::SlicingProgressState::SP_PROGRESS:
 		if ((m_sp_state != SlicingProgressState::SP_BEGAN && m_sp_state != SlicingProgressState::SP_PROGRESS) || percent < m_percentage)
@@ -1064,6 +1030,7 @@ bool NotificationManager::SlicingProgressNotification::set_progress_state(Notifi
 		set_percentage(percent);
 		m_has_cancel_button = true;
 		m_sp_state = state;
+        m_current_fade_opacity = 1;
 		return true;
 	case Slic3r::GUI::NotificationManager::SlicingProgressNotification::SlicingProgressState::SP_CANCELLED:
 		set_percentage(-1);
@@ -1101,7 +1068,7 @@ void NotificationManager::SlicingProgressNotification::set_status_text(const std
 		m_state = EState::NotFading;
 	}
 		break;
-	case Slic3r::GUI::NotificationManager::SlicingProgressNotification::SlicingProgressState::SP_CANCELLED: 
+	case Slic3r::GUI::NotificationManager::SlicingProgressNotification::SlicingProgressState::SP_CANCELLED:
 	{
 		NotificationData data{ NotificationType::SlicingProgress, NotificationLevel::ProgressBarNotificationLevel, 0, text };
 		update(data);
@@ -1110,7 +1077,7 @@ void NotificationManager::SlicingProgressNotification::set_status_text(const std
 		break;
 	case Slic3r::GUI::NotificationManager::SlicingProgressNotification::SlicingProgressState::SP_COMPLETED:
 	{
-		NotificationData data{ NotificationType::SlicingProgress, NotificationLevel::ProgressBarNotificationLevel, 0,  _u8L("Slicing finished."), m_is_fff ? _u8L("Export G-Code.") : _u8L("Export.") };
+		NotificationData data{ NotificationType::SlicingProgress, NotificationLevel::ProgressBarNotificationLevel, 0,  _u8L("Slice ok."), m_is_fff ? _u8L("Export G-Code.") : _u8L("Export.") };
 		update(data);
 		m_state = EState::Shown;
 	}
@@ -1128,7 +1095,7 @@ void NotificationManager::SlicingProgressNotification::set_print_info(const std:
 		m_print_info = info;
 	}
 }
-void NotificationManager::SlicingProgressNotification::set_sidebar_collapsed(bool collapsed) 
+void NotificationManager::SlicingProgressNotification::set_sidebar_collapsed(bool collapsed)
 {
 	m_sidebar_collapsed = collapsed;
 	if (m_sp_state == SlicingProgressState::SP_COMPLETED && collapsed)
@@ -1155,7 +1122,7 @@ int NotificationManager::SlicingProgressNotification::get_duration()
 bool  NotificationManager::SlicingProgressNotification::update_state(bool paused, const int64_t delta)
 {
 	bool ret = ProgressBarNotification::update_state(paused, delta);
-	// sets Estate to hidden 
+	// sets Estate to hidden
 	if (get_state() == PopNotification::EState::ClosePending || get_state() == PopNotification::EState::Finished)
 		set_progress_state(SlicingProgressState::SP_NO_SLICING);
 	return ret;
@@ -1231,7 +1198,7 @@ void NotificationManager::SlicingProgressNotification::render_bar(ImGuiWrapper& 
 }
 void  NotificationManager::SlicingProgressNotification::render_hypertext(ImGuiWrapper& imgui,const float text_x, const float text_y, const std::string text, bool more)
 {
-	if (m_sp_state == SlicingProgressState::SP_COMPLETED && !m_sidebar_collapsed) 
+	if (m_sp_state == SlicingProgressState::SP_COMPLETED && !m_sidebar_collapsed)
 		return;
 	ProgressBarNotification::render_hypertext(imgui, text_x, text_y, text, more);
 }
@@ -1442,21 +1409,41 @@ void NotificationManager::push_delayed_notification(const NotificationType type,
 		push_delayed_notification_data(std::make_unique<PopNotification>(*it, m_id_provider, m_evt_handler), condition_callback, initial_delay, delay_interval);
 }
 
-void NotificationManager::push_validate_error_notification(const std::string& text)
+void NotificationManager::push_validate_error_notification(StringObjectException const &error)
 {
-	push_notification_data({ NotificationType::ValidateError, NotificationLevel::ErrorNotificationLevel, 0,  _u8L("ERROR:") + "\n" + text }, 0);
+    auto po = dynamic_cast<PrintObjectBase const *>(error.object);
+    auto mo = po ? po->model_object() : dynamic_cast<ModelObject const *>(error.object);
+    auto callback = (mo || !error.opt_key.empty()) ? [id = mo ? mo->id() : 0, opt = error.opt_key](wxEvtHandler *) {
+		auto & objects = wxGetApp().model().objects;
+		auto iter = id.id ? std::find_if(objects.begin(), objects.end(), [id](auto o) { return o->id() == id; }) : objects.end();
+        if (iter != objects.end())
+			wxGetApp().obj_list()->select_items({{*iter, nullptr}});
+        if (!opt.empty()) {
+            if (iter != objects.end())
+				wxGetApp().params_panel()->switch_to_object();
+            wxGetApp().sidebar().jump_to_option(opt, Preset::TYPE_PRINT, L"");
+		}
+		return false;
+	} : std::function<bool(wxEvtHandler *)>();
+    auto link = (mo || !error.opt_key.empty()) ? _u8L("Jump to") : "";
+    if (mo) link += std::string(" [") + mo->name + "]";
+    if (!error.opt_key.empty()) link += std::string(" (") + error.opt_key + ")";
+    push_notification_data({NotificationType::ValidateError, NotificationLevel::ErrorNotificationLevel, 0, _u8L("Error:") + "\n" + error.string, link, callback}, 0);
 	set_slicing_progress_hidden();
 }
 
 void NotificationManager::push_slicing_error_notification(const std::string& text)
 {
 	set_all_slicing_errors_gray(false);
-	push_notification_data({ NotificationType::SlicingError, NotificationLevel::ErrorNotificationLevel, 0,  _u8L("ERROR:") + "\n" + text }, 0);
+	push_notification_data({ NotificationType::SlicingError, NotificationLevel::ErrorNotificationLevel, 0,  _u8L("Error:") + "\n" + text }, 0);
 	set_slicing_progress_hidden();
 }
-void NotificationManager::push_slicing_warning_notification(const std::string& text, bool gray, ObjectID oid, int warning_step)
+void NotificationManager::push_slicing_warning_notification(const std::string& text, bool gray, ObjectID oid, int warning_step, int warning_msg_id)
 {
-	NotificationData data { NotificationType::SlicingWarning, NotificationLevel::WarningNotificationLevel, 0,  _u8L("WARNING:") + "\n" + text };
+	NotificationData data { NotificationType::SlicingWarning, NotificationLevel::WarningNotificationLevel, 0,  _u8L("Warning:") + "\n" + text };
+
+	data.sub_msg_id = warning_msg_id;
+	data.ori_text = text;
 
 	auto notification = std::make_unique<NotificationManager::ObjectIDNotification>(data, m_id_provider, m_evt_handler);
 	notification->object_id = oid;
@@ -1467,13 +1454,13 @@ void NotificationManager::push_slicing_warning_notification(const std::string& t
 }
 void NotificationManager::push_plater_error_notification(const std::string& text)
 {
-	push_notification_data({ NotificationType::PlaterError, NotificationLevel::ErrorNotificationLevel, 0,  _u8L("ERROR:") + "\n" + text }, 0);
+	push_notification_data({ NotificationType::PlaterError, NotificationLevel::ErrorNotificationLevel, 0,  _u8L("Error:") + "\n" + text }, 0);
 }
 
 void NotificationManager::close_plater_error_notification(const std::string& text)
 {
 	for (std::unique_ptr<PopNotification> &notification : m_pop_notifications) {
-		if (notification->get_type() == NotificationType::PlaterError && notification->compare_text(_u8L("ERROR:") + "\n" + text)) {
+		if (notification->get_type() == NotificationType::PlaterError && notification->compare_text(_u8L("Error:") + "\n" + text)) {
 			notification->close();
 		}
 	}
@@ -1481,9 +1468,9 @@ void NotificationManager::close_plater_error_notification(const std::string& tex
 
 void NotificationManager::push_plater_warning_notification(const std::string& text)
 {
-	// Find if was not hidden 
+	// Find if was not hidden
 	for (std::unique_ptr<PopNotification>& notification : m_pop_notifications) {
-		if (notification->get_type() == NotificationType::PlaterWarning && notification->compare_text(_u8L("WARNING:") + "\n" + text)) {
+		if (notification->get_type() == NotificationType::PlaterWarning && notification->compare_text(_u8L("Warning:") + "\n" + text)) {
 			if (notification->get_state() == PopNotification::EState::Hidden) {
 				//dynamic_cast<PlaterWarningNotification*>(notification.get())->show();
 				return;
@@ -1491,7 +1478,7 @@ void NotificationManager::push_plater_warning_notification(const std::string& te
 		}
 	}
 
-	NotificationData data{ NotificationType::PlaterWarning, NotificationLevel::WarningNotificationLevel, 0,  _u8L("WARNING:") + "\n" + text };
+	NotificationData data{ NotificationType::PlaterWarning, NotificationLevel::WarningNotificationLevel, 0,  _u8L("Warning:") + "\n" + text };
 
 	auto notification = std::make_unique<NotificationManager::PlaterWarningNotification>(data, m_id_provider, m_evt_handler);
 	push_notification_data(std::move(notification), 0);
@@ -1502,7 +1489,7 @@ void NotificationManager::push_plater_warning_notification(const std::string& te
 void NotificationManager::close_plater_warning_notification(const std::string& text)
 {
 	for (std::unique_ptr<PopNotification> &notification : m_pop_notifications) {
-		if (notification->get_type() == NotificationType::PlaterWarning && notification->compare_text(_u8L("WARNING:") + "\n" + text)) {
+		if (notification->get_type() == NotificationType::PlaterWarning && notification->compare_text(_u8L("Warning:") + "\n" + text)) {
 			dynamic_cast<PlaterWarningNotification*>(notification.get())->real_close();
 		}
 	}
@@ -1544,14 +1531,14 @@ void NotificationManager::close_slicing_errors_and_warnings()
 void NotificationManager::close_slicing_error_notification(const std::string& text)
 {
 	for (std::unique_ptr<PopNotification>& notification : m_pop_notifications) {
-		if (notification->get_type() == NotificationType::SlicingError && notification->compare_text(_u8L("ERROR:") + "\n" + text)) {
+		if (notification->get_type() == NotificationType::SlicingError && notification->compare_text(_u8L("Error:") + "\n" + text)) {
 			notification->close();
 		}
 	}
 }
 void  NotificationManager::push_simplify_suggestion_notification(const std::string& text, ObjectID object_id, const std::string& hypertext/* = ""*/, std::function<bool(wxEvtHandler*)> callback/* = std::function<bool(wxEvtHandler*)>()*/)
 {
-	NotificationData data{ NotificationType::SimplifySuggestion, NotificationLevel::PrintInfoNotificationLevel, 10,  text, hypertext, callback };
+	NotificationData data{ NotificationType::SimplifySuggestion, NotificationLevel::PrintInfoNotificationLevel, 0,  text, hypertext, callback };
 	auto notification = std::make_unique<NotificationManager::ObjectIDNotification>(data, m_id_provider, m_evt_handler);
 	notification->object_id = object_id;
 	push_notification_data(std::move(notification), 0);
@@ -1592,72 +1579,28 @@ void NotificationManager::remove_simplify_suggestion_with_id(const ObjectID oid)
 		}
 }
 
+void NotificationManager::set_simplify_suggestion_multiline(const ObjectID oid, bool bMulti)
+{
+    for (std::unique_ptr<PopNotification> &notification : m_pop_notifications)
+        if (notification->get_type() == NotificationType::SimplifySuggestion) {
+            if (static_cast<ObjectIDNotification *>(notification.get())->object_id == oid)
+				notification->set_Multiline(bMulti);
+        }
+}
+
 void NotificationManager::push_exporting_finished_notification(const std::string& path, const std::string& dir_path, bool on_removable)
 {
 	close_notification_of_type(NotificationType::ExportFinished);
-	NotificationData data{ NotificationType::ExportFinished, NotificationLevel::RegularNotificationLevel, on_removable ? 0 : 20,  _u8L("Exporting finished.") + "\n" + path };
+	NotificationData data{ NotificationType::ExportFinished, NotificationLevel::RegularNotificationLevel, on_removable ? 0 : 20,  _u8L("Export ok.") + "\n" + path };
 	push_notification_data(std::make_unique<NotificationManager::ExportFinishedNotification>(data, m_id_provider, m_evt_handler, on_removable, path, dir_path), 0);
 	set_slicing_progress_hidden();
-}
-
-void  NotificationManager::push_upload_job_notification(int id, float filesize, const std::string& filename, const std::string& host, float percentage)
-{
-	// find if upload with same id was not already in notification
-	// done by compare_jon_id not compare_text thus has to be performed here
-	for (std::unique_ptr<PopNotification>& notification : m_pop_notifications) {
-		if (notification->get_type() == NotificationType::PrintHostUpload && dynamic_cast<PrintHostUploadNotification*>(notification.get())->compare_job_id(id)) {
-			return;
-		}
-	}
-	std::string text = PrintHostUploadNotification::get_upload_job_text(id, filename, host);
-	NotificationData data{ NotificationType::PrintHostUpload, NotificationLevel::ProgressBarNotificationLevel, 10, text };
-	push_notification_data(std::make_unique<NotificationManager::PrintHostUploadNotification>(data, m_id_provider, m_evt_handler, 0, id, filesize), 0);
-}
-void NotificationManager::set_upload_job_notification_percentage(int id, const std::string& filename, const std::string& host, float percentage)
-{
-	for (std::unique_ptr<PopNotification>& notification : m_pop_notifications) {
-		if (notification->get_type() == NotificationType::PrintHostUpload) {
-			PrintHostUploadNotification* phun = dynamic_cast<PrintHostUploadNotification*>(notification.get());
-			if (phun->compare_job_id(id)) {
-				phun->set_percentage(percentage);
-				wxGetApp().plater()->get_current_canvas3D()->schedule_extra_frame(0);
-				break;
-			}
-		}
-	}
-}
-void NotificationManager::upload_job_notification_show_canceled(int id, const std::string& filename, const std::string& host)
-{
-	for (std::unique_ptr<PopNotification>& notification : m_pop_notifications) {
-		if (notification->get_type() == NotificationType::PrintHostUpload) {
-			PrintHostUploadNotification* phun = dynamic_cast<PrintHostUploadNotification*>(notification.get());
-			if (phun->compare_job_id(id)) {
-				phun->cancel();
-				wxGetApp().plater()->get_current_canvas3D()->schedule_extra_frame(0);
-				break;
-			}
-		}
-	}
-}
-void NotificationManager::upload_job_notification_show_error(int id, const std::string& filename, const std::string& host)
-{
-	for (std::unique_ptr<PopNotification>& notification : m_pop_notifications) {
-		if (notification->get_type() == NotificationType::PrintHostUpload) {
-			PrintHostUploadNotification* phun = dynamic_cast<PrintHostUploadNotification*>(notification.get());
-			if(phun->compare_job_id(id)) {
-				phun->error();
-				wxGetApp().plater()->get_current_canvas3D()->schedule_extra_frame(0);
-				break;
-			}
-		}
-	}
 }
 
 void NotificationManager::init_slicing_progress_notification(std::function<bool()> cancel_callback)
 {
 	for (std::unique_ptr<PopNotification>& notification : m_pop_notifications) {
 		if (notification->get_type() == NotificationType::SlicingProgress) {
-			dynamic_cast<SlicingProgressNotification*>(notification.get())->set_cancel_callback(cancel_callback);	
+			dynamic_cast<SlicingProgressNotification*>(notification.get())->set_cancel_callback(cancel_callback);
 			return;
 		}
 	}
@@ -1798,7 +1741,7 @@ void NotificationManager::progress_indicator_set_progress(int pr)
 	for (std::unique_ptr<PopNotification>& notification : m_pop_notifications) {
 		if (notification->get_type() == NotificationType::ProgressIndicator) {
 			dynamic_cast<ProgressIndicatorNotification*>(notification.get())->set_progress(pr);
-			// Ask for rendering - needs to be done on every progress. Calls to here doesnt trigger IDLE event or rendering. 
+			// Ask for rendering - needs to be done on every progress. Calls to here doesnt trigger IDLE event or rendering.
 			wxGetApp().plater()->get_current_canvas3D()->schedule_extra_frame(100);
 			return;
 		}
@@ -1827,26 +1770,7 @@ int  NotificationManager::progress_indicator_get_range() const
 
 void NotificationManager::push_hint_notification(bool open_next)
 {
-	for (std::unique_ptr<PopNotification>& notification : m_pop_notifications) {
-		if (notification->get_type() == NotificationType::DidYouKnowHint) {
-			(dynamic_cast<HintNotification*>(notification.get()))->open_next();
-			return;
-		}
-	}
-	
-	NotificationData data{ NotificationType::DidYouKnowHint, NotificationLevel::HintNotificationLevel, 300, "" };
-	// from user - open now
-	if (!open_next) {
-		push_notification_data(std::make_unique<NotificationManager::HintNotification>(data, m_id_provider, m_evt_handler, open_next), 0);
-		stop_delayed_notifications_of_type(NotificationType::DidYouKnowHint);
-	// at startup - delay for half a second to let other notification pop up, than try every 30 seconds
-	// show only if no notifications are shown
-	} else { 
-		auto condition = [&self = std::as_const(*this)]() {
-			return self.get_notification_count() == 0;
-		};
-		push_delayed_notification_data(std::make_unique<NotificationManager::HintNotification>(data, m_id_provider, m_evt_handler, open_next), condition, 500, 30000);
-	}
+	return;
 }
 
 bool NotificationManager::is_hint_notification_open()
@@ -1859,7 +1783,7 @@ bool NotificationManager::is_hint_notification_open()
 }
 void NotificationManager::deactivate_loaded_hints()
 {
-	HintDatabase::get_instance().uninit();
+	;
 }
 void NotificationManager::push_updated_item_info_notification(InfoItemType type)
 {
@@ -1895,7 +1819,11 @@ bool NotificationManager::push_notification_data(std::unique_ptr<NotificationMan
 	bool retval = false;
 	if (this->activate_existing(notification.get())) {
 		if (m_initialized) { // ignore update action - it cant be initialized if canvas and imgui context is not ready
-			m_pop_notifications.back()->update(notification->get_data());
+			if (notification->get_type() == NotificationType::SlicingWarning) {
+				m_pop_notifications.back()->append(notification->get_data().ori_text);
+			}
+			else
+				m_pop_notifications.back()->update(notification->get_data());
 		}
 	} else {
 		m_pop_notifications.emplace_back(std::move(notification));
@@ -1913,7 +1841,7 @@ void NotificationManager::push_delayed_notification_data(std::unique_ptr<Notific
 	if (initial_delay == 0 && condition_callback()) {
 		if( push_notification_data(std::move(notification), 0))
 			return;
-	} 
+	}
 	m_waiting_notifications.emplace_back(std::move(notification), condition_callback, initial_delay == 0 ? delay_interval : initial_delay, delay_interval);
 	wxGetApp().plater()->get_current_canvas3D()->schedule_extra_frame(initial_delay == 0 ? delay_interval : initial_delay);
 }
@@ -1930,19 +1858,18 @@ void NotificationManager::stop_delayed_notifications_of_type(const NotificationT
 	}
 }
 
-void NotificationManager::render_notifications(GLCanvas3D& canvas, float overlay_width)
+void NotificationManager::render_notifications(GLCanvas3D &canvas, float overlay_width, float bottom_margin, float right_margin)
 {
 	sort_notifications();
-	
-	float last_y = 0.0f;
+
+	float last_y = bottom_margin;
 
 	for (const auto& notification : m_pop_notifications) {
 		if (notification->get_state() != PopNotification::EState::Hidden) {
-			notification->render(canvas, last_y, m_move_from_overlay && !m_in_preview, overlay_width);
+            notification->render(canvas, last_y, m_move_from_overlay && !m_in_preview, overlay_width, right_margin * m_scale);
 			if (notification->get_state() != PopNotification::EState::Finished)
 				last_y = notification->get_top() + GAP_WIDTH;
 		}
-		
 	}
 	m_last_render = GLCanvas3D::timestamp_now();
 }
@@ -1963,7 +1890,7 @@ bool NotificationManager::update_notifications(GLCanvas3D& canvas)
 	const int64_t time_since_render = GLCanvas3D::timestamp_now() - m_last_render;
 	bool		  request_render = false;
 	// During render, each notification detects if its currently hovered and changes its state to EState::Hovered
-	// If any notification is hovered, all restarts its countdown 
+	// If any notification is hovered, all restarts its countdown
 	bool          hover = false;
 	for (const std::unique_ptr<PopNotification>& notification : m_pop_notifications) {
 		if (notification->is_hovered()) {
@@ -1978,7 +1905,7 @@ bool NotificationManager::update_notifications(GLCanvas3D& canvas)
 		next_render = std::min<int64_t>(next_render, notification->next_render());
 		if (notification->get_state() == PopNotification::EState::Finished)
 			it = m_pop_notifications.erase(it);
-		else 
+		else
 			++it;
 	}
 
@@ -2035,14 +1962,18 @@ bool NotificationManager::activate_existing(const NotificationManager::PopNotifi
 				if ((*it)->compare_text(new_text) == false) {
 					continue;
 				}
-			// multiple of one type allowed, but must have different text nad ObjectID 
+			// multiple of one type allowed, but must have different text nad ObjectID
 			} else if (new_type == NotificationType::SlicingWarning) {
 				auto w1 = dynamic_cast<const ObjectIDNotification*>(notification);
 				auto w2 = dynamic_cast<const ObjectIDNotification*>(it->get());
 				if (w1 != nullptr && w2 != nullptr) {
-					if (!(*it)->compare_text(new_text) || w1->object_id != w2->object_id) {
+					const NotificationData& data1 = w1->get_data();
+					const NotificationData& data2 = w2->get_data();
+					if (data1.sub_msg_id != data2.sub_msg_id)
 						continue;
-					}
+					//if (!(*it)->compare_text(new_text) || w1->object_id != w2->object_id) {
+					//	continue;
+					//}
 				} else {
 					continue;
 				}
@@ -2056,13 +1987,19 @@ bool NotificationManager::activate_existing(const NotificationManager::PopNotifi
 }
 
 void NotificationManager::set_in_preview(bool preview)
-{ 
+{
     m_in_preview = preview;
     for (std::unique_ptr<PopNotification> &notification : m_pop_notifications) {
-        if (notification->get_type() == NotificationType::PlaterWarning) 
+        if (notification->get_type() == NotificationType::PlaterWarning)
+            notification->hide(preview);
+        if (notification->get_type() == NotificationType::BBLPlateInfo)
             notification->hide(preview);
         if (notification->get_type() == NotificationType::SignDetected)
             notification->hide(!preview);
+        if (notification->get_type() == NotificationType::BBLObjectInfo)
+            notification->hide(preview);
+        if (notification->get_type() == NotificationType::BBLSeqPrintInfo)
+            notification->hide(preview);
 		if (m_in_preview && notification->get_type() == NotificationType::DidYouKnowHint)
 			notification->close();
     }
@@ -2109,6 +2046,220 @@ size_t NotificationManager::get_notification_count() const
 	}
 	return ret;
 }
+
+
+void NotificationManager::bbl_show_plateinfo_notification(const std::string &text)
+{
+    NotificationData data{NotificationType::BBLPlateInfo, NotificationLevel::PrintInfoNotificationLevel, 86400 * 10, text};
+
+    for (std::unique_ptr<PopNotification> &notification : m_pop_notifications) {
+        if (notification->get_type() == NotificationType::BBLPlateInfo) {
+            notification->reinit();
+            notification->update(data);
+            return;
+        }
+    }
+
+    auto notification = std::make_unique<NotificationManager::PopNotification>(data, m_id_provider, m_evt_handler);
+    push_notification_data(std::move(notification), 0);
+}
+
+void NotificationManager::bbl_close_plateinfo_notification()
+{
+    for (std::unique_ptr<PopNotification> &notification : m_pop_notifications)
+        if (notification->get_type() == NotificationType::BBLPlateInfo) {
+            notification->close();
+        }
+}
+
+void NotificationManager::bbl_show_objectsinfo_notification(const std::string &text, bool is_warning, bool is_hidden)
+{
+    std::string hyper_text;
+    auto callback = std::function<bool(wxEvtHandler *)>();
+    if (is_warning) {
+        callback =[](wxEvtHandler *) {
+            wxCommandEvent *evt = new wxCommandEvent(EVT_REPAIR_MODEL);
+            wxQueueEvent(wxGetApp().plater(), evt);
+            return false;
+        };
+        hyper_text =  _u8L(" (Repair)");
+    }
+    NotificationData data{NotificationType::BBLObjectInfo, NotificationLevel::PrintInfoNotificationLevel, 86400 * 10, text, hyper_text, callback};
+    if (is_warning)
+        data.use_warn_color = true;
+
+    for (auto it = m_pop_notifications.begin(); it != m_pop_notifications.end();) {
+        std::unique_ptr<PopNotification>& notification = *it;
+        if (notification->get_type() == NotificationType::BBLObjectInfo) {
+            it = m_pop_notifications.erase(it);
+            break;
+        }
+        else
+            ++it;
+    }
+
+    auto notification = std::make_unique<NotificationManager::PopNotification>(data, m_id_provider, m_evt_handler);
+    notification->set_Multiline(true);
+    if (is_hidden)
+        notification->hide(true);
+    push_notification_data(std::move(notification), 0);
+}
+
+void NotificationManager::bbl_close_objectsinfo_notification()
+{
+    for (std::unique_ptr<PopNotification> &notification : m_pop_notifications)
+        if (notification->get_type() == NotificationType::BBLObjectInfo) { notification->close(); }
+}
+
+void NotificationManager::bbl_show_seqprintinfo_notification(const std::string &text)
+{
+    NotificationData data{NotificationType::BBLSeqPrintInfo, NotificationLevel::PrintInfoNotificationLevel, 86400 * 10, text};
+
+    for (std::unique_ptr<PopNotification> &notification : m_pop_notifications) {
+        if (notification->get_type() == NotificationType::BBLSeqPrintInfo) {
+            notification->reinit();
+            notification->update(data);
+            return;
+        }
+    }
+
+    auto notification = std::make_unique<NotificationManager::PopNotification>(data, m_id_provider, m_evt_handler);
+    notification->set_Multiline(true);
+    push_notification_data(std::move(notification), 0);
+}
+
+void NotificationManager::bbl_close_seqprintinfo_notification()
+{
+    for (std::unique_ptr<PopNotification> &notification : m_pop_notifications)
+        if (notification->get_type() == NotificationType::BBLSeqPrintInfo) { notification->close(); }
+}
+
+void NotificationManager::bbl_show_slice_emptylayer_notification(const std::string &text, bool bOverride)
+{
+    NotificationData data{NotificationType::BBLSliceEmptyLayer, NotificationLevel::WarningNotificationLevel, 0, _u8L("WARNING:") + "\n" + text};
+
+    for (std::unique_ptr<PopNotification> &notification : m_pop_notifications) {
+        if (notification->get_type() == NotificationType::BBLSliceEmptyLayer) {
+            if (bOverride)
+                notification->update(data);
+            else {
+                NotificationData sdata{NotificationType::BBLSliceEmptyLayer, NotificationLevel::WarningNotificationLevel, 0, notification->get_text1() + "\n" + text};
+                notification->update(sdata);
+            }
+
+            return;
+        }
+    }
+
+    auto notification = std::make_unique<NotificationManager::PopNotification>(data, m_id_provider, m_evt_handler);
+    notification->set_Multiline(true);
+    push_notification_data(std::move(notification), 0);
+}
+
+void NotificationManager::bbl_show_app_newversion_notification()
+{
+	push_notification(NotificationType::NewAppAvailable);
+}
+
+void NotificationManager::bbl_show_need_support_on_notification()
+{
+    NotificationData data{NotificationType::BBLNeedSupportON, NotificationLevel::WarningNotificationLevel, 0,_u8L("Warning:") + "\n" + _u8L("Your model needs support ! Please make support material enable.")};
+
+    for (std::unique_ptr<PopNotification> &notification : m_pop_notifications) {
+        if (notification->get_type() == NotificationType::BBLNeedSupportON) {
+            notification->reinit();
+            notification->update(data);
+            return;
+        }
+    }
+
+    auto notification = std::make_unique<NotificationManager::PopNotification>(data, m_id_provider, m_evt_handler);
+    push_notification_data(std::move(notification), 0);
+}
+
+
+void NotificationManager::bbl_close_need_support_on_notification()
+{
+    for (std::unique_ptr<PopNotification> &notification : m_pop_notifications)
+        if (notification->get_type() == NotificationType::BBLNeedSupportON) { notification->close(); }
+}
+
+
+void NotificationManager::bbl_show_gcode_overlap_notification()
+{
+    NotificationData data{NotificationType::BBLGcodeOverlap, NotificationLevel::WarningNotificationLevel, 0,
+                          _u8L("Warning:") + "\n" + _u8L("Gcode path overlap")};
+
+    for (std::unique_ptr<PopNotification> &notification : m_pop_notifications) {
+        if (notification->get_type() == NotificationType::BBLGcodeOverlap) {
+            notification->reinit();
+            notification->update(data);
+            return;
+        }
+    }
+
+    auto notification = std::make_unique<NotificationManager::PopNotification>(data, m_id_provider, m_evt_handler);
+    push_notification_data(std::move(notification), 0);
+}
+
+
+void NotificationManager::bbl_close_gcode_overlap_notification()
+{
+    for (std::unique_ptr<PopNotification> &notification : m_pop_notifications)
+        if (notification->get_type() == NotificationType::BBLGcodeOverlap) { notification->close(); }
+}
+
+void NotificationManager::bbl_show_sole_text_notification(NotificationType sType, const std::string &text, bool bOverride, int level, bool autohide) {
+
+	NotificationLevel nlevel;
+    int               nHideTime = 20;
+    switch ( level) {
+    case 1:
+		nlevel = NotificationLevel::WarningNotificationLevel;
+		nHideTime = 0;
+		break;
+    case 2:
+		nlevel = NotificationLevel::ErrorNotificationLevel; break;
+        nHideTime = 0;
+    case 0:
+    default:
+		nlevel = NotificationLevel::PrintInfoNotificationLevel;
+
+		if (autohide == false) nHideTime = 86400 * 10;
+        break;
+    }
+
+    NotificationData data{sType, nlevel, nHideTime, text};
+    for (std::unique_ptr<PopNotification> &notification : m_pop_notifications) {
+        if (notification->get_type() == sType) {
+            if (bOverride) {
+                notification->update(data);
+            }
+            else {
+                NotificationData sdata{sType, nlevel, nHideTime, notification->get_text1() + "\n" + text};
+                notification->update(sdata);
+            }
+
+            return;
+        }
+    }
+
+    auto notification = std::make_unique<NotificationManager::PopNotification>(data, m_id_provider, m_evt_handler);
+    notification->set_Multiline(true);
+    push_notification_data(std::move(notification), 0);
+}
+void NotificationManager::bbl_chose_sole_text_notification(NotificationType sType)
+{
+    for (std::unique_ptr<PopNotification> &notification : m_pop_notifications)
+        if (notification->get_type() == sType) { notification->close(); }
+}
+
+
+void NotificationManager::set_scale(float scale)
+{
+	if(m_scale != scale)m_scale = scale;
+}
+
 
 }//namespace GUI
 }//namespace Slic3r

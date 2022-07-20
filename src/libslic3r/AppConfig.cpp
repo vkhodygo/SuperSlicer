@@ -1,10 +1,13 @@
 #include "libslic3r/libslic3r.h"
 #include "libslic3r/Utils.hpp"
 #include "AppConfig.hpp"
+//BBS
+#include "Preset.hpp"
 #include "Exception.hpp"
 #include "LocalesUtils.hpp"
 #include "Thread.hpp"
 #include "format.hpp"
+#include "nlohmann/json.hpp"
 
 #include <utility>
 #include <vector>
@@ -19,6 +22,9 @@
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/format/format_fwd.hpp>
 #include <boost/log/trivial.hpp>
+#include <boost/uuid/uuid.hpp>
+#include <boost/uuid/uuid_generators.hpp>
+#include <boost/uuid/uuid_io.hpp>
 
 #ifdef WIN32
 //FIXME replace the two following includes with <boost/md5.hpp> after it becomes mainstream.
@@ -26,27 +32,22 @@
 #include <boost/algorithm/hex.hpp>
 #endif
 
+#define USE_JSON_CONFIG
+
+using namespace nlohmann;
+
 namespace Slic3r {
 
-static const std::string VENDOR_PREFIX = "vendor:";
-static const std::string MODEL_PREFIX = "model:";
-// Because of a crash in PrusaSlicer 2.3.0/2.3.1 when showing an update notification with some locales, we don't want PrusaSlicer 2.3.0/2.3.1
-// to show this notification. On the other hand, we would like PrusaSlicer 2.3.2 to show an update notification of the upcoming PrusaSlicer 2.4.0.
-// Thus we will let PrusaSlicer 2.3.2 and couple of follow-up versions to download the version number from an alternate file until the PrusaSlicer 2.3.0/2.3.1
-// are phased out, then we will revert to the original name.
-//static const std::string VERSION_CHECK_URL = "https://files.prusa3d.com/wp-content/uploads/repository/PrusaSlicer-settings-master/live/PrusaSlicer.version";
-static const std::string VERSION_CHECK_URL = "https://files.prusa3d.com/wp-content/uploads/repository/PrusaSlicer-settings-master/live/PrusaSlicer.version2";
+static const std::string VERSION_CHECK_URL = "";
+static const std::string MODELS_STR = "models";
 
 const std::string AppConfig::SECTION_FILAMENTS = "filaments";
 const std::string AppConfig::SECTION_MATERIALS = "sla_materials";
 
+
 void AppConfig::reset()
 {
     m_storage.clear();
-    m_vendors.clear();
-    m_dirty = false;
-    m_orig_version = Semver::invalid();
-    m_legacy_datadir = false;
     set_defaults();
 };
 
@@ -54,151 +55,218 @@ void AppConfig::reset()
 void AppConfig::set_defaults()
 {
     if (m_mode == EAppMode::Editor) {
+#ifdef SUPPORT_AUTO_CENTER
         // Reset the empty fields to defaults.
         if (get("autocenter").empty())
-            set("autocenter", "0");
+            set_bool("autocenter", true);
+#endif
+
+#ifdef SUPPORT_BACKGROUND_PROCESSING
         // Disable background processing by default as it is not stable.
         if (get("background_processing").empty())
-            set("background_processing", "0");
-        // If set, the "Controller" tab for the control of the printer over serial line and the serial port settings are hidden.
-        // By default, Prusa has the controller hidden.
-        if (get("no_controller").empty())
-            set("no_controller", "1");
-        // If set, the "- default -" selections of print/filament/printer are suppressed, if there is a valid preset available.
-        if (get("no_defaults").empty())
-            set("no_defaults", "1");
-        if (get("show_incompatible_presets").empty())
-            set("show_incompatible_presets", "0");
+            set_bool("background_processing", false);
+#endif
 
+#ifdef SUPPORT_SHOW_DROP_PROJECT
         if (get("show_drop_project_dialog").empty())
-            set("show_drop_project_dialog", "1");
+            set_bool("show_drop_project_dialog", true);
+#endif
+
         if (get("drop_project_action").empty())
-            set("drop_project_action", "1");
-
-        if (get("preset_update").empty())
-            set("preset_update", "1");
-
-        if (get("export_sources_full_pathnames").empty())
-            set("export_sources_full_pathnames", "0");
+            set_bool("drop_project_action", true);
 
 #ifdef _WIN32
         if (get("associate_3mf").empty())
-            set("associate_3mf", "0");
+            set_bool("associate_3mf", false);
         if (get("associate_stl").empty())
-            set("associate_stl", "0");
+            set_bool("associate_stl", false);
+        if (get("associate_step").empty())
+            set_bool("associate_step", false);
 
-        if (get("tabs_as_menu").empty())
-            set("tabs_as_menu", "0");
 #endif // _WIN32
 
         // remove old 'use_legacy_opengl' parameter from this config, if present
         if (!get("use_legacy_opengl").empty())
-            erase("", "use_legacy_opengl");
+            erase("app", "use_legacy_opengl");
 
 #ifdef __APPLE__
         if (get("use_retina_opengl").empty())
-            set("use_retina_opengl", "1");
+            set_bool("use_retina_opengl", true);
 #endif
 
         if (get("single_instance").empty())
-            set("single_instance", 
+            set_bool("single_instance",
 #ifdef __APPLE__
-                "1"
+                true
 #else // __APPLE__
-                "0"
+                false
 #endif // __APPLE__
                 );
 
+#ifdef SUPPORT_REMEMBER_OUTPUT_PATH
         if (get("remember_output_path").empty())
-            set("remember_output_path", "1");
+            set_bool("remember_output_path", true);
 
         if (get("remember_output_path_removable").empty())
-            set("remember_output_path_removable", "1");
-
-        if (get("use_custom_toolbar_size").empty())
-            set("use_custom_toolbar_size", "0");
-
-        if (get("custom_toolbar_size").empty())
-            set("custom_toolbar_size", "100");
-
-        if (get("auto_toolbar_size").empty())
-            set("auto_toolbar_size", "100");
- 
-       if (get("notify_release").empty())
-           set("notify_release", "all"); // or "none" or "release"
+            set_bool("remember_output_path_removable", true);
+#endif
+        if (get("toolkit_size").empty())
+            set("toolkit_size", "100");
 
 #if ENABLE_ENVIRONMENT_MAP
         if (get("use_environment_map").empty())
-            set("use_environment_map", "0");
+            set("use_environment_map", false);
 #endif // ENABLE_ENVIRONMENT_MAP
 
-        if (get("use_inches").empty())
+        if (get("use_inches").empty()) 
             set("use_inches", "0");
-
-        if (get("default_action_on_close_application").empty())
-            set("default_action_on_close_application", "none"); // , "discard" or "save" 
-
-        if (get("default_action_on_select_preset").empty())
-            set("default_action_on_select_preset", "none");     // , "transfer", "discard" or "save" 
-
-        if (get("default_action_on_new_project").empty())
-            set("default_action_on_new_project", "none");       // , "keep(transfer)", "discard" or "save" 
-
-        if (get("color_mapinulation_panel").empty())
-            set("color_mapinulation_panel", "0");
-
-        if (get("order_volumes").empty())
-            set("order_volumes", "1");
-
-        if (get("clear_undo_redo_stack_on_new_project").empty())
-            set("clear_undo_redo_stack_on_new_project", "1");
     }
     else {
 #ifdef _WIN32
         if (get("associate_gcode").empty())
-            set("associate_gcode", "0");
+            set_bool("associate_gcode", false);
 #endif // _WIN32
     }
 
-    if (get("seq_top_layer_only").empty())
-        set("seq_top_layer_only", "1");
-
     if (get("use_perspective_camera").empty())
-        set("use_perspective_camera", "1");
+        set_bool("use_perspective_camera", true);
 
+#ifdef SUPPORT_FREE_CAMERA
     if (get("use_free_camera").empty())
-        set("use_free_camera", "0");
+        set_bool("use_free_camera", false);
+#endif
 
+#ifdef SUPPORT_REVERSE_MOUSE_ZOOM
     if (get("reverse_mouse_wheel_zoom").empty())
-        set("reverse_mouse_wheel_zoom", "0");
+        set_bool("reverse_mouse_wheel_zoom", false);
+#endif
 
-    if (get("show_splash_screen").empty())
-        set("show_splash_screen", "1");
-
+#ifdef SUPPORT_SHOW_HINTS
     if (get("show_hints").empty())
-        set("show_hints", "1");
+        set_bool("show_hints", true);
+#endif
 
-    if (get("allow_ip_resolve").empty())
-        set("allow_ip_resolve", "1");
 
 #ifdef _WIN32
+
+#ifdef SUPPORT_3D_CONNEXION
     if (get("use_legacy_3DConnexion").empty())
-        set("use_legacy_3DConnexion", "0");
+        set_bool("use_legacy_3DConnexion", false);
+#endif
 
+#ifdef SUPPORT_DARK_MODE
     if (get("dark_color_mode").empty())
-        set("dark_color_mode", "0");
+        set_bool("dark_color_mode", false);
+#endif
 
+#ifdef SUPPORT_SYS_MENU
     if (get("sys_menu_enabled").empty())
-        set("sys_menu_enabled", "1");
+        set_bool("sys_menu_enabled", true);
+#endif
 #endif // _WIN32
 
+    // BBS
+    /*if (get("3mf_include_gcode").empty())
+        set_bool("3mf_include_gcode", true);*/
+
+    if (get("developer_mode").empty())
+        set_bool("developer_mode", false);
+
+    if (get("severity_level").empty())
+        set("severity_level", "trace");
+
+    if (get("dump_video").empty())
+        set_bool("dump_video", false);
+
+    // BBS
+    if (get("preset_folder").empty())
+        set("preset_folder", "");
+
+    // BBS
+    if (get("slicer_uuid").empty()) {
+        boost::uuids::uuid uuid = boost::uuids::random_generator()();
+        set("slicer_uuid", to_string(uuid));
+    }
+
+    if (get("show_model_mesh").empty()) {
+        set_bool("show_model_mesh", false);
+    }
+
+    if (get("show_model_shadow").empty()) {
+        set_bool("show_model_shadow", true);
+    }
+
+    if (get("show_build_edges").empty()) {
+        set_bool("show_build_edgets", false);
+    }
+
+    if (get("show_daily_tips").empty()) {
+        set_bool("show_daily_tips", true);
+    }
+
+    if (get("show_home_page").empty()) {
+        set_bool("show_home_page", true);
+    }
+
+    if (get("show_printable_box").empty()) {
+        set_bool("show_printable_box", true);
+    }
+
+    if (get("units").empty()) {
+         set("units", "0");
+    }
+
+    if (get("sync_user_preset").empty()) {
+        set_bool("sync_user_preset", false);
+    }
+
+    if (get("keyboard_supported").empty()) {
+        set("keyboard_supported", std::string("none/alt/control/shift"));
+    }
+
+    if (get("mouse_supported").empty()) {
+        set("mouse_supported", "mouse left/mouse middle/mouse right");
+    }
+
+    if (get("rotate_view").empty()) {
+        set("rotate_view", "none/mouse left");
+    }
+
+    if (get("move_view").empty()) {
+        set("move_view", "none/mouse left");
+    }
+
+    if (get("zoom_view").empty()) {
+        set("zoom_view", "none/mouse left");
+    }
+
+    if (get("precise_control").empty()) {
+        set("precise_control", "none/mouse left");
+    }
+
+    if (get("mouse_wheel").empty()) {
+        set("mouse_wheel", "0");
+    }
+
+    if (get("backup_switch").empty()) {
+        set_bool("backup_switch", false);
+    }
+
+    if (get("backup_interval").empty()) {
+        set("backup_interval", "10");
+    }
+
+    if (get("iot_environment").empty()) {
+        set("iot_environment", "1");
+    }
+
     // Remove legacy window positions/sizes
-    erase("", "main_frame_maximized");
-    erase("", "main_frame_pos");
-    erase("", "main_frame_size");
-    erase("", "object_settings_maximized");
-    erase("", "object_settings_pos");
-    erase("", "object_settings_size");
+    erase("app", "main_frame_maximized");
+    erase("app", "main_frame_pos");
+    erase("app", "main_frame_size");
+    erase("app", "object_settings_maximized");
+    erase("app", "object_settings_pos");
+    erase("app", "object_settings_size");
 }
 
 #ifdef WIN32
@@ -220,7 +288,7 @@ static std::string appconfig_md5_hash_line(const std::string_view data)
     assert(md5_digest_str.size() == 32);
     // This line will be emited at the end of the file.
     return "# MD5 checksum " + md5_digest_str + "\n";
-};
+}
 
 // Assume that the last line with the comment inside the config file contains a checksum and that the user didn't modify the config file.
 static bool verify_config_file_checksum(boost::nowide::ifstream &ifs)
@@ -247,99 +315,145 @@ static bool verify_config_file_checksum(boost::nowide::ifstream &ifs)
 }
 #endif
 
-std::string AppConfig::load(const std::string &path)
+
+
+#ifdef USE_JSON_CONFIG
+std::string AppConfig::load()
 {
-    this->reset();
+    json j;
 
     // 1) Read the complete config file into a boost::property_tree.
     namespace pt = boost::property_tree;
     pt::ptree tree;
     boost::nowide::ifstream ifs;
-    bool                    recovered = false;
+    bool recovered = false;
+    std::string error_message;
 
     try {
-        ifs.open(path);
-#ifdef WIN32
-        // Verify the checksum of the config file without taking just for debugging purpose.
-        if (!verify_config_file_checksum(ifs))
-            BOOST_LOG_TRIVIAL(info) << "The configuration file " << path <<
-            " has a wrong MD5 checksum or the checksum is missing. This may indicate a file corruption or a harmless user edit.";
+        ifs.open(AppConfig::loading_path());
 
-        ifs.seekg(0, boost::nowide::ifstream::beg);
+#ifdef WIN32
+        std::stringstream input_stream;
+        input_stream << ifs.rdbuf();
+        std::string total_string = input_stream.str();
+        size_t last_pos = total_string.find_last_of('}');
+        std::string left_string = total_string.substr(0, last_pos+1);
+        //skip the "\n"
+        std::string right_string = total_string.substr(last_pos+2);
+
+        std::string md5_str = appconfig_md5_hash_line({left_string.data()});
+        // Verify the checksum of the config file without taking just for debugging purpose.
+        if (md5_str != right_string)
+            BOOST_LOG_TRIVIAL(info) << "The configuration file " << AppConfig::loading_path() <<
+            " has a wrong MD5 checksum or the checksum is missing. This may indicate a file corruption or a harmless user edit.";
+        j = json::parse(left_string);
+#else
+        ifs >> j;
 #endif
-        pt::read_ini(ifs, tree);
-    } catch (pt::ptree_error& ex) {
+    }
+    catch(nlohmann::detail::parse_error &err) {
 #ifdef WIN32
         // The configuration file is corrupted, try replacing it with the backup configuration.
         ifs.close();
-        std::string backup_path = (boost::format("%1%.bak") % path).str();
+        std::string backup_path = (boost::format("%1%.bak") % AppConfig::loading_path()).str();
         if (boost::filesystem::exists(backup_path)) {
             // Compute checksum of the configuration backup file and try to load configuration from it when the checksum is correct.
             boost::nowide::ifstream backup_ifs(backup_path);
-            if (!verify_config_file_checksum(backup_ifs)) {
-                BOOST_LOG_TRIVIAL(error) << format("Both \"%1%\" and \"%2%\" are corrupted. It isn't possible to restore configuration from the backup.", path, backup_path);
+            std::stringstream back_input_stream;
+            back_input_stream << backup_ifs.rdbuf();
+            std::string back_total_string = back_input_stream.str();
+            size_t back_last_pos = back_total_string.find_last_of('}');
+            std::string back_left_string = back_total_string.substr(0, back_last_pos+1);
+            std::string back_right_string = back_total_string.substr(back_last_pos+2);
+
+            std::string back_md5_str = appconfig_md5_hash_line({back_left_string.data()});
+            // Verify the checksum of the config file without taking just for debugging purpose.
+            if (back_md5_str != back_right_string) {
+                BOOST_LOG_TRIVIAL(error) << format("Both \"%1%\" and \"%2%\" are corrupted. It isn't possible to restore configuration from the backup.", AppConfig::loading_path(), backup_path);
                 backup_ifs.close();
                 boost::filesystem::remove(backup_path);
-            } else if (std::string error_message; copy_file(backup_path, path, error_message, false) != SUCCESS) {
-                BOOST_LOG_TRIVIAL(error) << format("Configuration file \"%1%\" is corrupted. Failed to restore from backup \"%2%\": %3%", path, backup_path, error_message);
-                backup_ifs.close();
-                boost::filesystem::remove(backup_path);
-            } else {
-                BOOST_LOG_TRIVIAL(info) << format("Configuration file \"%1%\" was corrupted. It has been succesfully restored from the backup \"%2%\".", path, backup_path);
-                // Try parse configuration file after restore from backup.
-                try {
-                    ifs.open(path);
-                    pt::read_ini(ifs, tree);
-                    recovered = true;
-                } catch (pt::ptree_error& ex) {
-                    BOOST_LOG_TRIVIAL(info) << format("Failed to parse configuration file \"%1%\" after it has been restored from backup: %2%", path, ex.what());
-                }
             }
-        } else
-#endif // WIN32
-            BOOST_LOG_TRIVIAL(info) << format("Failed to parse configuration file \"%1%\": %2%", path, ex.what());
-        if (! recovered) {
-            // Report the initial error of parsing PrusaSlicer.ini.
-            // Error while parsing config file. We'll customize the error message and rethrow to be displayed.
-            // ! But to avoid the use of _utf8 (related to use of wxWidgets) 
-            // we will rethrow this exception from the place of load() call, if returned value wouldn't be empty
-            /*
-            throw Slic3r::RuntimeError(
-                _utf8(L("Error parsing PrusaSlicer config file, it is probably corrupted. "
-                        "Try to manually delete the file to recover from the error. Your user profiles will not be affected.")) +
-                "\n\n" + AppConfig::config_path() + "\n\n" + ex.what());
-            */
-            return ex.what();
+            else if (std::string error_message; copy_file(backup_path, AppConfig::loading_path(), error_message, false) != SUCCESS) {
+                BOOST_LOG_TRIVIAL(error) << format("Configuration file \"%1%\" is corrupted. Failed to restore from backup \"%2%\": %3%", AppConfig::loading_path(), backup_path, error_message);
+                backup_ifs.close();
+                boost::filesystem::remove(backup_path);
+            }
+            else {
+                BOOST_LOG_TRIVIAL(info) << format("Configuration file \"%1%\" was corrupted. It has been succesfully restored from the backup \"%2%\".", AppConfig::loading_path(), backup_path);
+                // Try parse configuration file after restore from backup.
+                j = json::parse(back_left_string);
+                recovered = true;
+            }
         }
+        else
+#endif // WIN32
+            BOOST_LOG_TRIVIAL(info) << format("Failed to parse configuration file \"%1%\": %2%", AppConfig::loading_path(), err.what());
+
+        if (!recovered)
+            return err.what();
     }
 
-    // 2) Parse the property_tree, extract the sections and key / value pairs.
-    for (const auto &section : tree) {
-    	if (section.second.empty()) {
-    		// This may be a top level (no section) entry, or an empty section.
-    		std::string data = section.second.data();
-    		if (! data.empty())
-    			// If there is a non-empty data, then it must be a top-level (without a section) config entry.
-    			m_storage[""][section.first] = data;
-    	} else if (boost::starts_with(section.first, VENDOR_PREFIX)) {
-            // This is a vendor section listing enabled model / variants
-            const auto vendor_name = section.first.substr(VENDOR_PREFIX.size());
-            auto &vendor = m_vendors[vendor_name];
-            for (const auto &kvp : section.second) {
-                if (! boost::starts_with(kvp.first, MODEL_PREFIX)) { continue; }
-                const auto model_name = kvp.first.substr(MODEL_PREFIX.size());
-                std::vector<std::string> variants;
-                if (! unescape_strings_cstyle(kvp.second.data(), variants)) { continue; }
-                for (const auto &variant : variants) {
-                    vendor[model_name].insert(variant);
+    try {
+        for (auto it = j.begin(); it != j.end(); it++) {
+            if (it.key() == MODELS_STR) {
+                for (auto& j_model : it.value()) {
+                    // This is a vendor section listing enabled model / variants
+                    const auto vendor_name = j_model["vendor"].get<std::string>();
+                    auto& vendor = m_vendors[vendor_name];
+                    const auto model_name = j_model["model"].get<std::string>();
+                    std::vector<std::string> variants;
+                    if (!unescape_strings_cstyle(j_model["nozzle_diameter"], variants)) { continue; }
+                    for (const auto& variant : variants) {
+                        vendor[model_name].insert(variant);
+                    }
+                }
+            } else if (it.key() == SECTION_FILAMENTS) {
+                json j_filaments = it.value();
+                for (auto& element : j_filaments) {
+                    m_storage[it.key()][element] = "true";
+                }
+            } else if (it.key() == "presets") {
+                for (auto iter = it.value().begin(); iter != it.value().end(); iter++) {
+                    if (iter.key() == "filaments") {
+                        // BBS: filament presets is now considered as project config instead of app config
+#if 0
+                        int idx = 0;
+                        for(auto& element: iter.value()) {
+                            if (idx == 0)
+                                m_storage[it.key()]["filament"] = element;
+                            else
+                                m_storage[it.key()]["filament_" + std::to_string(idx)] = element;
+                            idx++;
+                        }
+#endif
+                    } else {
+                        m_storage[it.key()][iter.key()] = iter.value().get<std::string>();
+                    }
+                }
+            } else {
+                if (it.value().is_object()) {
+                    for (auto iter = it.value().begin(); iter != it.value().end(); iter++) {
+                        if (iter.value().is_boolean()) {
+                            if (iter.value()) {
+                                m_storage[it.key()][iter.key()] = "true";
+                            } else {
+                                m_storage[it.key()][iter.key()] = "false";
+                            }
+                        } else {
+                            if (iter.value().is_string())
+                                m_storage[it.key()][iter.key()] = iter.value().get<std::string>();
+                            else {
+                                BOOST_LOG_TRIVIAL(trace) << "load config warning...";
+                            }
+                        }
+                    }
                 }
             }
-    	} else {
-    		// This must be a section name. Read the entries of a section.
-    		std::map<std::string, std::string> &storage = m_storage[section.first];
-            for (auto &kvp : section.second)
-            	storage[kvp.first] = kvp.second.data();
         }
+    } catch(std::exception err) {
+        BOOST_LOG_TRIVIAL(info) << format("parse app config \"%1%\", error: %2%", AppConfig::loading_path(), err.what());
+
+        return err.what();
     }
 
     // Figure out if datadir has legacy presets
@@ -347,10 +461,8 @@ std::string AppConfig::load(const std::string &path)
     m_legacy_datadir = false;
     if (ini_ver) {
         m_orig_version = *ini_ver;
-        // Make 1.40.0 alphas compare well
         ini_ver->set_metadata(boost::none);
         ini_ver->set_prerelease(boost::none);
-        m_legacy_datadir = ini_ver < Semver(1, 40, 0);
     }
 
     // Legacy conversion
@@ -373,9 +485,256 @@ std::string AppConfig::load(const std::string &path)
     return "";
 }
 
+void AppConfig::save()
+{
+    {
+        // Returns "undefined" if the thread naming functionality is not supported by the operating system.
+        std::optional<std::string> current_thread_name = get_current_thread_name();
+        if (current_thread_name && *current_thread_name != "bambustudio_main")
+            throw CriticalException("Calling AppConfig::save() from a worker thread!");
+    }
+
+    // The config is first written to a file with a PID suffix and then moved
+    // to avoid race conditions with multiple instances of Slic3r
+    const auto path = config_path();
+    std::string path_pid = (boost::format("%1%.%2%") % path % get_current_pid()).str();
+
+    json j;
+
+    std::stringstream config_ss;
+    if (m_mode == EAppMode::Editor)
+        j["header"] = Slic3r::header_slic3r_generated();
+    else
+        j["header"] = Slic3r::header_gcodeviewer_generated();
+
+    // Make sure the "no" category is written first.
+    for (const auto& kvp : m_storage["app"]) {
+        if (kvp.second == "true") {
+            j["app"][kvp.first] = true;
+            continue;
+        }
+        if (kvp.second == "false") {
+            j["app"][kvp.first] = false;
+            continue;
+        }
+        j["app"][kvp.first] = kvp.second;
+    }
+
+    // Write the other categories.
+    for (const auto& category : m_storage) {
+        if (category.first.empty())
+            continue;
+        if (category.first == SECTION_FILAMENTS) {
+            json j_filaments;
+            for (const auto& kvp: category.second) {
+                j_filaments.push_back(kvp.first);
+            }
+            j[category.first] = j_filaments;
+            continue;
+        } else if (category.first == "presets") {
+            json j_filament_array;
+            for(const auto& kvp : category.second) {
+                if (boost::starts_with(kvp.first, "filament")) {
+                    j_filament_array.push_back(kvp.second);
+                } else {
+                    j[category.first][kvp.first] = kvp.second;
+                }
+            }
+            j["presets"]["filaments"] = j_filament_array;
+            continue;
+        }
+        for (const auto& kvp : category.second) {
+            if (kvp.second == "true") {
+                j[category.first][kvp.first] = true;
+                continue;
+            }
+            if (kvp.second == "false") {
+                j[category.first][kvp.first] = false;
+                continue;
+            }
+            j[category.first][kvp.first] = kvp.second;
+        }
+    }
+
+    // Write vendor sections
+    for (const auto& vendor : m_vendors) {
+        size_t size_sum = 0;
+        for (const auto& model : vendor.second) { size_sum += model.second.size(); }
+        if (size_sum == 0) { continue; }
+
+        for (const auto& model : vendor.second) {
+            if (model.second.empty()) { continue; }
+            const std::vector<std::string> variants(model.second.begin(), model.second.end());
+            const auto escaped = escape_strings_cstyle(variants);
+            //j[VENDOR_PREFIX + vendor.first][MODEL_PREFIX + model.first] = escaped;
+            json j_model;
+            j_model["vendor"] = vendor.first;
+            j_model["model"] = model.first;
+            j_model["nozzle_diameter"] = escaped;
+            j[MODELS_STR].push_back(j_model);
+        }
+    }
+
+    boost::nowide::ofstream c;
+    c.open(path_pid, std::ios::out | std::ios::trunc);
+    c << std::setw(4) << j << std::endl;
+
+#ifdef WIN32
+    // WIN32 specific: The final "rename_file()" call is not safe in case of an application crash, there is no atomic "rename file" API
+    // provided by Windows (sic!). Therefore we save a MD5 checksum to be able to verify file corruption. In addition,
+    // we save the config file into a backup first before moving it to the final destination.
+    c << appconfig_md5_hash_line({j.dump(4)});
+#endif
+
+    c.close();
+
+#ifdef WIN32
+    // Make a backup of the configuration file before copying it to the final destination.
+    std::string error_message;
+    std::string backup_path = (boost::format("%1%.bak") % path).str();
+    // Copy configuration file with PID suffix into the configuration file with "bak" suffix.
+    if (copy_file(path_pid, backup_path, error_message, false) != SUCCESS)
+        BOOST_LOG_TRIVIAL(error) << "Copying from " << path_pid << " to " << backup_path << " failed. Failed to create a backup configuration.";
+#endif
+
+    // Rename the config atomically.
+    // On Windows, the rename is likely NOT atomic, thus it may fail if PrusaSlicer crashes on another thread in the meanwhile.
+    // To cope with that, we already made a backup of the config on Windows.
+    rename_file(path_pid, path);
+    m_dirty = false;
+}
+
+#else
+
 std::string AppConfig::load()
 {
-    return this->load(AppConfig::config_path());
+    // 1) Read the complete config file into a boost::property_tree.
+    namespace pt = boost::property_tree;
+    pt::ptree tree;
+    boost::nowide::ifstream ifs;
+    bool                    recovered = false;
+
+    try {
+        ifs.open(AppConfig::loading_path());
+#ifdef WIN32
+        // Verify the checksum of the config file without taking just for debugging purpose.
+        if (!verify_config_file_checksum(ifs))
+            BOOST_LOG_TRIVIAL(info) << "The configuration file " << AppConfig::loading_path() <<
+            " has a wrong MD5 checksum or the checksum is missing. This may indicate a file corruption or a harmless user edit.";
+
+        ifs.seekg(0, boost::nowide::ifstream::beg);
+#endif
+        pt::read_ini(ifs, tree);
+    }
+    catch (pt::ptree_error& ex) {
+#ifdef WIN32
+        // The configuration file is corrupted, try replacing it with the backup configuration.
+        ifs.close();
+        std::string backup_path = (boost::format("%1%.bak") % AppConfig::loading_path()).str();
+        if (boost::filesystem::exists(backup_path)) {
+            // Compute checksum of the configuration backup file and try to load configuration from it when the checksum is correct.
+            boost::nowide::ifstream backup_ifs(backup_path);
+            if (!verify_config_file_checksum(backup_ifs)) {
+                BOOST_LOG_TRIVIAL(error) << format("Both \"%1%\" and \"%2%\" are corrupted. It isn't possible to restore configuration from the backup.", AppConfig::loading_path(), backup_path);
+                backup_ifs.close();
+                boost::filesystem::remove(backup_path);
+            }
+            else if (std::string error_message; copy_file(backup_path, AppConfig::loading_path(), error_message, false) != SUCCESS) {
+                BOOST_LOG_TRIVIAL(error) << format("Configuration file \"%1%\" is corrupted. Failed to restore from backup \"%2%\": %3%", AppConfig::loading_path(), backup_path, error_message);
+                backup_ifs.close();
+                boost::filesystem::remove(backup_path);
+            }
+            else {
+                BOOST_LOG_TRIVIAL(info) << format("Configuration file \"%1%\" was corrupted. It has been succesfully restored from the backup \"%2%\".", AppConfig::loading_path(), backup_path);
+                // Try parse configuration file after restore from backup.
+                try {
+                    ifs.open(AppConfig::loading_path());
+                    pt::read_ini(ifs, tree);
+                    recovered = true;
+                }
+                catch (pt::ptree_error& ex) {
+                    BOOST_LOG_TRIVIAL(info) << format("Failed to parse configuration file \"%1%\" after it has been restored from backup: %2%", AppConfig::loading_path(), ex.what());
+                }
+            }
+        }
+        else
+#endif // WIN32
+            BOOST_LOG_TRIVIAL(info) << format("Failed to parse configuration file \"%1%\": %2%", AppConfig::loading_path(), ex.what());
+        if (!recovered) {
+            // Report the initial error of parsing PrusaSlicer.ini.
+            // Error while parsing config file. We'll customize the error message and rethrow to be displayed.
+            // ! But to avoid the use of _utf8 (related to use of wxWidgets)
+            // we will rethrow this exception from the place of load() call, if returned value wouldn't be empty
+            /*
+            throw Slic3r::RuntimeError(
+                _utf8(L("Error parsing Prusa config file, it is probably corrupted. "
+                        "Try to manually delete the file to recover from the error. Your user profiles will not be affected.")) +
+                "\n\n" + AppConfig::config_path() + "\n\n" + ex.what());
+            */
+            return ex.what();
+        }
+    }
+
+    // 2) Parse the property_tree, extract the sections and key / value pairs.
+    for (const auto& section : tree) {
+        if (section.second.empty()) {
+            // This may be a top level (no section) entry, or an empty section.
+            std::string data = section.second.data();
+            if (!data.empty())
+                // If there is a non-empty data, then it must be a top-level (without a section) config entry.
+                m_storage[""][section.first] = data;
+        }
+        else if (boost::starts_with(section.first, VENDOR_PREFIX)) {
+            // This is a vendor section listing enabled model / variants
+            const auto vendor_name = section.first.substr(VENDOR_PREFIX.size());
+            auto& vendor = m_vendors[vendor_name];
+            for (const auto& kvp : section.second) {
+                if (!boost::starts_with(kvp.first, MODEL_PREFIX)) { continue; }
+                const auto model_name = kvp.first.substr(MODEL_PREFIX.size());
+                std::vector<std::string> variants;
+                if (!unescape_strings_cstyle(kvp.second.data(), variants)) { continue; }
+                for (const auto& variant : variants) {
+                    vendor[model_name].insert(variant);
+                }
+            }
+        }
+        else {
+            // This must be a section name. Read the entries of a section.
+            std::map<std::string, std::string>& storage = m_storage[section.first];
+            for (auto& kvp : section.second)
+                storage[kvp.first] = kvp.second.data();
+        }
+    }
+
+    // Figure out if datadir has legacy presets
+    auto ini_ver = Semver::parse(get("version"));
+    m_legacy_datadir = false;
+    if (ini_ver) {
+        m_orig_version = *ini_ver;
+        // Make 1.40.0 alphas compare well
+        ini_ver->set_metadata(boost::none);
+        ini_ver->set_prerelease(boost::none);
+        //m_legacy_datadir = ini_ver < Semver(1, 40, 0);
+    }
+
+    // Legacy conversion
+    if (m_mode == EAppMode::Editor) {
+        // Convert [extras] "physical_printer" to [presets] "physical_printer",
+        // remove the [extras] section if it becomes empty.
+        if (auto it_section = m_storage.find("extras"); it_section != m_storage.end()) {
+            if (auto it_physical_printer = it_section->second.find("physical_printer"); it_physical_printer != it_section->second.end()) {
+                m_storage["presets"]["physical_printer"] = it_physical_printer->second;
+                it_section->second.erase(it_physical_printer);
+            }
+            if (it_section->second.empty())
+                m_storage.erase(it_section);
+        }
+    }
+
+    // Override missing or keys with their defaults.
+    this->set_defaults();
+    m_dirty = false;
+    return "";
 }
 
 void AppConfig::save()
@@ -383,7 +742,7 @@ void AppConfig::save()
     {
         // Returns "undefined" if the thread naming functionality is not supported by the operating system.
         std::optional<std::string> current_thread_name = get_current_thread_name();
-        if (current_thread_name && *current_thread_name != "slic3r_main")
+        if (current_thread_name && *current_thread_name != "bambustudio_main")
             throw CriticalException("Calling AppConfig::save() from a worker thread!");
     }
 
@@ -437,7 +796,7 @@ void AppConfig::save()
     c << appconfig_md5_hash_line(config_str);
 #endif
     c.close();
-    
+
 #ifdef WIN32
     // Make a backup of the configuration file before copying it to the final destination.
     std::string error_message;
@@ -453,6 +812,7 @@ void AppConfig::save()
     rename_file(path_pid, path);
     m_dirty = false;
 }
+#endif
 
 bool AppConfig::get_variant(const std::string &vendor, const std::string &model, const std::string &variant) const
 {
@@ -491,12 +851,12 @@ std::string AppConfig::get_last_dir() const
     const auto it = m_storage.find("recent");
     if (it != m_storage.end()) {
         {
-            const auto it2 = it->second.find("skein_directory");
+            const auto it2 = it->second.find("last_opened_folder");
             if (it2 != it->second.end() && ! it2->second.empty())
                 return it2->second;
         }
         {
-            const auto it2 = it->second.find("config_directory");
+            const auto it2 = it->second.find("settings_folder");
             if (it2 != it->second.end() && ! it2->second.empty())
                 return it2->second;
         }
@@ -561,22 +921,22 @@ std::vector<std::string> AppConfig::get_mouse_device_names() const
 
 void AppConfig::update_config_dir(const std::string &dir)
 {
-    this->set("recent", "config_directory", dir);
+    this->set("recent", "settings_folder", dir);
 }
 
 void AppConfig::update_skein_dir(const std::string &dir)
 {
     if (is_shapes_dir(dir))
         return; // do not save "shapes gallery" directory
-    this->set("recent", "skein_directory", dir);
+    this->set("recent", "last_opened_folder", dir);
 }
 /*
 std::string AppConfig::get_last_output_dir(const std::string &alt) const
 {
-	
+
     const auto it = m_storage.find("");
     if (it != m_storage.end()) {
-        const auto it2 = it->second.find("last_output_path");
+        const auto it2 = it->second.find("last_export_path");
         const auto it3 = it->second.find("remember_output_path");
         if (it2 != it->second.end() && it3 != it->second.end() && ! it2->second.empty() && it3->second == "1")
             return it2->second;
@@ -586,18 +946,16 @@ std::string AppConfig::get_last_output_dir(const std::string &alt) const
 
 void AppConfig::update_last_output_dir(const std::string &dir)
 {
-    this->set("", "last_output_path", dir);
+    this->set("", "last_export_path", dir);
 }
 */
 std::string AppConfig::get_last_output_dir(const std::string& alt, const bool removable) const
 {
-	std::string s1 = (removable ? "last_output_path_removable" : "last_output_path");
-	std::string s2 = (removable ? "remember_output_path_removable" : "remember_output_path");
-	const auto it = m_storage.find("");
+	std::string s1 = ("last_export_path");
+	const auto it = m_storage.find("app");
 	if (it != m_storage.end()) {
 		const auto it2 = it->second.find(s1);
-		const auto it3 = it->second.find(s2);
-		if (it2 != it->second.end() && it3 != it->second.end() && !it2->second.empty() && it3->second == "1")
+		if (it2 != it->second.end() && !it2->second.empty())
 			return it2->second;
 	}
 	return is_shapes_dir(alt) ? get_last_dir() : alt;
@@ -605,7 +963,76 @@ std::string AppConfig::get_last_output_dir(const std::string& alt, const bool re
 
 void AppConfig::update_last_output_dir(const std::string& dir, const bool removable)
 {
-	this->set("", (removable ? "last_output_path_removable" : "last_output_path"), dir);
+	this->set("app", ("last_export_path"), dir);
+}
+
+// BBS: backup
+std::string AppConfig::get_last_backup_dir() const
+{
+	const auto it = m_storage.find("app");
+	if (it != m_storage.end()) {
+		const auto it2 = it->second.find("last_backup_path");
+		if (it2 != it->second.end())
+			return it2->second;
+	}
+	return "";
+}
+
+// BBS: backup
+void AppConfig::update_last_backup_dir(const std::string& dir)
+{
+	this->set("app", "last_backup_path", dir);
+    this->save();
+}
+
+std::string AppConfig::get_region()
+{
+    std::string sel = get("iot_environment");
+    std::string region;
+    if (sel == ENV_DEV_HOST)
+        region = "ENV_CN_DEV";
+    else if (sel == ENV_QAT_HOST)
+        region = "ENV_CN_QA";
+    else if (sel == ENV_PRE_HOST)
+        region = "ENV_CN_PRE";
+    if (region.empty())
+        return this->get("region");
+    return region;
+}
+
+std::string AppConfig::get_country_code()
+{
+    std::string region = get_region();
+    /* fix PRE environment when release to public */
+#if BBL_RELEASE_TO_PUBLIC
+    this->set("iot_environment", "2");
+    return "ENV_CN_PRE";
+#else
+    if (is_engineering_region()) { return region; }
+    if (region == "CHN" || region == "China")
+        return "CN";
+    else if (region == "USA")
+        return "US";
+    else if (region == "Asia-Pacific")
+        return "Others";
+    else if (region == "Europe")
+        return "US";
+    else if (region == "North America")
+        return "US";
+    else
+        return "Others";
+    return "";
+#endif
+}
+
+bool AppConfig::is_engineering_region(){
+    std::string sel = get("iot_environment");
+    std::string region;
+    if (sel == ENV_DEV_HOST
+        || sel == ENV_QAT_HOST
+        ||sel == ENV_PRE_HOST)
+        return true;
+    return false;
 }
 
 
@@ -613,11 +1040,11 @@ void AppConfig::reset_selections()
 {
     auto it = m_storage.find("presets");
     if (it != m_storage.end()) {
-        it->second.erase("print");
-        it->second.erase("filament");
+        it->second.erase(PRESET_PRINT_NAME);
+        it->second.erase(PRESET_FILAMENT_NAME);
         it->second.erase("sla_print");
         it->second.erase("sla_material");
-        it->second.erase("printer");
+        it->second.erase(PRESET_PRINTER_NAME);
         it->second.erase("physical_printer");
         m_dirty = true;
     }
@@ -625,9 +1052,15 @@ void AppConfig::reset_selections()
 
 std::string AppConfig::config_path()
 {
+#ifdef USE_JSON_CONFIG
+    std::string path = (m_mode == EAppMode::Editor) ?
+        (boost::filesystem::path(Slic3r::data_dir()) / (SLIC3R_APP_KEY ".conf")).make_preferred().string() :
+        (boost::filesystem::path(Slic3r::data_dir()) / (GCODEVIEWER_APP_KEY ".conf")).make_preferred().string();
+#else
     std::string path = (m_mode == EAppMode::Editor) ?
         (boost::filesystem::path(Slic3r::data_dir()) / (SLIC3R_APP_KEY ".ini")).make_preferred().string() :
         (boost::filesystem::path(Slic3r::data_dir()) / (GCODEVIEWER_APP_KEY ".ini")).make_preferred().string();
+#endif
 
     return path;
 }

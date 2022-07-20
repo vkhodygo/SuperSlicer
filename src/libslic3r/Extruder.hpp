@@ -11,14 +11,21 @@ class GCodeConfig;
 class Extruder
 {
 public:
-    Extruder(unsigned int id, GCodeConfig *config);
+    Extruder(unsigned int id, GCodeConfig *config, bool share_extruder);
     virtual ~Extruder() {}
 
     void   reset() {
-        m_E             = 0;
+        // BBS
+        if (m_share_extruder) {
+            m_share_E = 0.;
+            m_share_retracted = 0.;
+        } else {
+            m_E             = 0;
+            m_retracted     = 0;
+            m_restart_extra = 0;
+        }
+
         m_absolute_E    = 0;
-        m_retracted     = 0;
-        m_restart_extra = 0;
     }
 
     unsigned int id() const { return m_id; }
@@ -26,7 +33,7 @@ public:
     double extrude(double dE);
     double retract(double length, double restart_extra);
     double unretract();
-    double E() const { return m_E; }
+    double E() const { return m_share_extruder ? m_share_E : m_E; }
     void   reset_E() { m_E = 0.; }
     double e_per_mm(double mm3_per_mm) const { return mm3_per_mm * m_e_per_mm3; }
     double e_per_mm3() const { return m_e_per_mm3; }
@@ -39,9 +46,9 @@ public:
     double filament_crossection() const { return this->filament_diameter() * this->filament_diameter() * 0.25 * PI; }
     double filament_density() const;
     double filament_cost() const;
-    double extrusion_multiplier() const;
+    double filament_flow_ratio() const;
     double retract_before_wipe() const;
-    double retract_length() const;
+    double retraction_length() const;
     double retract_lift() const;
     int    retract_speed() const;
     int    deretract_speed() const;
@@ -57,7 +64,7 @@ private:
     GCodeConfig *m_config;
     // Print-wide global ID of this extruder.
     unsigned int m_id;
-    // Current state of the extruder axis, may be resetted if use_relative_e_distances.
+    // Current state of the extruder axis, may be resetted if relative_e_axis.
     double       m_E;
     // Current state of the extruder tachometer, used to output the extruded_volume() and used_filament() statistics.
     double       m_absolute_E;
@@ -66,6 +73,12 @@ private:
     // When retracted, this value stores the extra amount of priming on deretraction.
     double       m_restart_extra;
     double       m_e_per_mm3;
+
+    // BBS.
+    // Create shared E and retraction data for single extruder multi-material machine
+    bool          m_share_extruder;
+    static double m_share_E;
+    static double m_share_retracted;
 };
 
 // Sort Extruder objects by the extruder id by default.

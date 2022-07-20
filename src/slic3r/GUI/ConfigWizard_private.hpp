@@ -24,7 +24,7 @@
 #include "libslic3r/PrintConfig.hpp"
 #include "libslic3r/PresetBundle.hpp"
 #include "slic3r/Utils/PresetUpdater.hpp"
-#include "BedShapeDialog.hpp"
+//#include "BedShapeDialog.hpp"
 #include "GUI.hpp"
 #include "wxExtensions.hpp"
 
@@ -64,13 +64,15 @@ struct Bundle
 	std::unique_ptr<PresetBundle> preset_bundle;
 	VendorProfile* vendor_profile{ nullptr };
 	bool is_in_resources{ false };
-	bool is_prusa_bundle{ false };
+	//BBS: set BBL as default
+	bool is_bbl_bundle{ false };
 
 	Bundle() = default;
 	Bundle(Bundle&& other);
 
 	// Returns false if not loaded. Reason for that is logged as boost::log error.
-	bool load(fs::path source_path, bool is_in_resources, bool is_prusa_bundle = false);
+	//BBS: set BBL as default
+	bool load(fs::path source_path, bool is_in_resources, bool is_bbl_bundle = false);
 
 	const std::string& vendor_id() const { return vendor_profile->id; }
 };
@@ -79,8 +81,9 @@ struct BundleMap : std::unordered_map<std::string /* = vendor ID */, Bundle>
 {
 	static BundleMap load();
 
-	Bundle& prusa_bundle();
-	const Bundle& prusa_bundle() const;
+	//BBS: add BBL as default
+	Bundle& bbl_bundle();
+	const Bundle& bbl_bundle() const;
 };
 
 struct Materials
@@ -415,42 +418,18 @@ public:
 };
 #endif // _WIN32
 
-struct PageMode: ConfigWizardPage
-{
-    wxRadioButton *radio_simple;
-    wxRadioButton *radio_advanced;
-    wxRadioButton *radio_expert;
-
-    wxCheckBox    *check_inch;
-
-    PageMode(ConfigWizard *parent);
-
-    void serialize_mode(AppConfig *app_config) const;
-
-    virtual void on_activate();
-};
-
 struct PageVendors: ConfigWizardPage
 {
     PageVendors(ConfigWizard *parent);
 };
 
-struct PageFirmware: ConfigWizardPage
-{
-    const ConfigOptionDef &gcode_opt;
-    wxChoice *gcode_picker;
-
-    PageFirmware(ConfigWizard *parent);
-    virtual void apply_custom_config(DynamicPrintConfig &config);
-};
-
-struct PageBedShape: ConfigWizardPage
+/*struct PageBedShape: ConfigWizardPage
 {
     BedShapePanel *shape_panel;
 
     PageBedShape(ConfigWizard *parent);
     virtual void apply_custom_config(DynamicPrintConfig &config);
-};
+};*/
 
 struct PageDiameters: ConfigWizardPage
 {
@@ -474,62 +453,6 @@ struct PageTemperatures: ConfigWizardPage
 typedef std::map<std::string /* = vendor ID */, 
                  std::pair<PagePrinters* /* = FFF page */, 
                            PagePrinters* /* = SLA page */>> Pages3rdparty;
-
-
-class ConfigWizardIndex: public wxPanel
-{
-public:
-    ConfigWizardIndex(wxWindow *parent);
-
-    void add_page(ConfigWizardPage *page);
-    void add_label(wxString label, unsigned indent = 0);
-
-    size_t active_item() const { return item_active; }
-    ConfigWizardPage* active_page() const;
-    bool active_is_last() const { return item_active < items.size() && item_active == last_page; }
-
-    void go_prev();
-    void go_next();
-    void go_to(size_t i);
-    void go_to(const ConfigWizardPage *page);
-
-    void clear();
-    void msw_rescale();
-
-    int em() const { return em_w; }
-
-    static const size_t NO_ITEM = size_t(-1);
-private:
-    struct Item
-    {
-        wxString label;
-        unsigned indent;
-        ConfigWizardPage *page;     // nullptr page => label-only item
-
-        bool operator==(ConfigWizardPage *page) const { return this->page == page; }
-    };
-
-    int em_w;
-    int em_h;
-    ScalableBitmap bg;
-    ScalableBitmap bullet_black;
-    ScalableBitmap bullet_blue;
-    ScalableBitmap bullet_white;
-
-    std::vector<Item> items;
-    size_t item_active;
-    ssize_t item_hover;
-    size_t last_page;
-
-    int item_height() const { return std::max(bullet_black.bmp().GetSize().GetHeight(), em_w) + em_w; }
-
-    void on_paint(wxPaintEvent &evt);
-    void on_mouse_move(wxMouseEvent &evt);
-};
-
-wxDEFINE_EVENT(EVT_INDEX_PAGE, wxCommandEvent);
-
-
 
 // ConfigWizard private data
 
@@ -559,31 +482,26 @@ struct ConfigWizard::priv
     wxBoxSizer *hscroll_sizer = nullptr;
     wxBoxSizer *btnsizer = nullptr;
     ConfigWizardPage *page_current = nullptr;
-    ConfigWizardIndex *index = nullptr;
     wxButton *btn_sel_all = nullptr;
     wxButton *btn_prev = nullptr;
     wxButton *btn_next = nullptr;
     wxButton *btn_finish = nullptr;
     wxButton *btn_cancel = nullptr;
 
-    PageWelcome      *page_welcome = nullptr;
     PagePrinters     *page_fff = nullptr;
     PagePrinters     *page_msla = nullptr;
     PageMaterials    *page_filaments = nullptr;
     PageMaterials    *page_sla_materials = nullptr;
     PageCustom       *page_custom = nullptr;
-    PageUpdate       *page_update = nullptr;
     PageReloadFromDisk *page_reload_from_disk = nullptr;
 #ifdef _WIN32
     PageFilesAssociation* page_files_association = nullptr;
 #endif // _WIN32
-    PageMode         *page_mode = nullptr;
     PageVendors      *page_vendors = nullptr;
     Pages3rdparty     pages_3rdparty;
 
     // Custom setup pages
-    PageFirmware     *page_firmware = nullptr;
-    PageBedShape     *page_bed = nullptr;
+    //PageBedShape     *page_bed = nullptr;
     PageDiameters    *page_diams = nullptr;
     PageTemperatures *page_temps = nullptr;
 
@@ -592,7 +510,7 @@ struct ConfigWizard::priv
 
     priv(ConfigWizard *q)
         : q(q)
-        , appconfig_new(AppConfig::EAppMode::Editor)
+        , appconfig_new()
         , filaments(T_FFF)
         , sla_materials(T_SLA)
     {}
@@ -625,7 +543,7 @@ struct ConfigWizard::priv
     bool check_fff_selected();        // Used to decide whether to display Filaments page
     bool check_sla_selected();        // Used to decide whether to display SLA Materials page
 
-    int em() const { return index->em(); }
+    int em() const { return 10; }
 };
 
 }

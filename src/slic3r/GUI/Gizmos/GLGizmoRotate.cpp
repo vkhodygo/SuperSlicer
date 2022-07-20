@@ -26,6 +26,7 @@ const float GLGizmoRotate::ScaleLongTooth = 0.1f; // in percent of radius
 const unsigned int GLGizmoRotate::SnapRegionsCount = 8;
 const float GLGizmoRotate::GrabberOffset = 0.15f; // in percent of radius
 
+
 GLGizmoRotate::GLGizmoRotate(GLCanvas3D& parent, GLGizmoRotate::Axis axis)
     : GLGizmoBase(parent, "", -1)
     , m_axis(axis)
@@ -70,7 +71,7 @@ std::string GLGizmoRotate::get_tooltip() const
     case Y: { axis = "Y"; break; }
     case Z: { axis = "Z"; break; }
     }
-    return (m_hover_id == 0 || m_grabbers[0].dragging) ? axis + ": " + format((float)Geometry::rad2deg(m_angle), 4) : "";
+    return (m_hover_id == 0 || m_grabbers[0].dragging) ? axis + ": " + format((float)Geometry::rad2deg(m_angle), 2) : "";
 }
 
 bool GLGizmoRotate::on_init()
@@ -186,12 +187,14 @@ void GLGizmoRotate::on_render_for_picking()
     glsafe(::glPopMatrix());
 }
 
+//BBS: add input window for move
 void GLGizmoRotate3D::on_render_input_window(float x, float y, float bottom_limit)
 {
-    if (wxGetApp().preset_bundle->printers.get_edited_preset().printer_technology() != ptSLA)
-        return;
-
-    RotoptimzeWindow popup{m_imgui, m_rotoptimizewin_state, {x, y, bottom_limit}};
+    //if (wxGetApp().preset_bundle->printers.get_edited_preset().printer_technology() != ptSLA)
+    //    return;
+    if (m_object_manipulation)
+        m_object_manipulation->do_render_rotate_window(m_imgui, "Rotate", x, y, bottom_limit);
+    //RotoptimzeWindow popup{m_imgui, m_rotoptimizewin_state, {x, y, bottom_limit}};
 }
 
 void GLGizmoRotate3D::load_rotoptimize_state()
@@ -308,6 +311,8 @@ void GLGizmoRotate::render_grabber(const BoundingBoxf3& box) const
     double grabber_radius = (double)m_radius * (1.0 + (double)GrabberOffset);
     m_grabbers[0].center = Vec3d(::cos(m_angle) * grabber_radius, ::sin(m_angle) * grabber_radius, 0.0);
     m_grabbers[0].angles(2) = m_angle;
+    m_grabbers[0].color = AXES_COLOR[m_axis];
+    m_grabbers[0].hover_color = AXES_HOVER_COLOR[m_axis];
 
     glsafe(::glColor4fv((m_hover_id != -1) ? m_drag_color.data() : m_highlight_color.data()));
 
@@ -322,14 +327,16 @@ void GLGizmoRotate::render_grabber(const BoundingBoxf3& box) const
 
 void GLGizmoRotate::render_grabber_extension(const BoundingBoxf3& box, bool picking) const
 {
-    float mean_size = (float)((box.size()(0) + box.size()(1) + box.size()(2)) / 3.0);
-    double size = m_dragging ? (double)m_grabbers[0].get_dragging_half_size(mean_size) : (double)m_grabbers[0].get_half_size(mean_size);
+    double size = 0.75 * GLGizmoBase::Grabber::FixedGrabberSize * GLGizmoBase::INV_ZOOM;
+    //float mean_size = (float)((box.size()(0) + box.size()(1) + box.size()(2)) / 3.0);
+    //double size = m_dragging ? (double)m_grabbers[0].get_dragging_half_size(mean_size) : (double)m_grabbers[0].get_half_size(mean_size);
 
     std::array<float, 4> color = m_grabbers[0].color;
     if (!picking && m_hover_id != -1) {
-        color[0] = 1.0f - color[0];
-        color[1] = 1.0f - color[1];
-        color[2] = 1.0f - color[2];
+        color = m_grabbers[0].hover_color;
+        //color[0] = 1.0f - color[0];
+        //color[1] = 1.0f - color[1];
+        //color[2] = 1.0f - color[2];
     }
 
     GLShaderProgram* shader = wxGetApp().get_shader("gouraud_light");
@@ -346,7 +353,7 @@ void GLGizmoRotate::render_grabber_extension(const BoundingBoxf3& box, bool pick
     glsafe(::glTranslated(m_grabbers[0].center.x(), m_grabbers[0].center.y(), m_grabbers[0].center.z()));
     glsafe(::glRotated(Geometry::rad2deg(m_angle), 0.0, 0.0, 1.0));
     glsafe(::glRotated(90.0, 1.0, 0.0, 0.0));
-    glsafe(::glTranslated(0.0, 0.0, 2.0 * size));
+    glsafe(::glTranslated(0.0, 0.0, 1.5 * size));
     glsafe(::glScaled(0.75 * size, 0.75 * size, 3.0 * size));
     m_cone.render();
     glsafe(::glPopMatrix());
@@ -354,7 +361,7 @@ void GLGizmoRotate::render_grabber_extension(const BoundingBoxf3& box, bool pick
     glsafe(::glTranslated(m_grabbers[0].center.x(), m_grabbers[0].center.y(), m_grabbers[0].center.z()));
     glsafe(::glRotated(Geometry::rad2deg(m_angle), 0.0, 0.0, 1.0));
     glsafe(::glRotated(-90.0, 1.0, 0.0, 0.0));
-    glsafe(::glTranslated(0.0, 0.0, 2.0 * size));
+    glsafe(::glTranslated(0.0, 0.0, 1.5 * size));
     glsafe(::glScaled(0.75 * size, 0.75 * size, 3.0 * size));
     m_cone.render();
     glsafe(::glPopMatrix());
@@ -431,8 +438,11 @@ Vec3d GLGizmoRotate::mouse_position_in_local_plane(const Linef3& mouse_ray, cons
     return transform(mouse_ray, m).intersect_plane(0.0);
 }
 
-GLGizmoRotate3D::GLGizmoRotate3D(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id)
+//BBS: GUI refactor: add obj manipulation
+GLGizmoRotate3D::GLGizmoRotate3D(GLCanvas3D& parent, const std::string& icon_filename, unsigned int sprite_id, GizmoObjectManipulation* obj_manipulation)
     : GLGizmoBase(parent, icon_filename, sprite_id)
+    //BBS: GUI refactor: add obj manipulation
+    , m_object_manipulation(obj_manipulation)
 {
     m_gizmos.emplace_back(parent, GLGizmoRotate::X);
     m_gizmos.emplace_back(parent, GLGizmoRotate::Y);
@@ -456,7 +466,7 @@ bool GLGizmoRotate3D::on_init()
         m_gizmos[i].set_highlight_color(AXES_COLOR[i]);
     }
 
-    m_shortcut_key = WXK_CONTROL_R;
+    m_shortcut_key = WXK_NONE;
 
     return true;
 }
@@ -468,7 +478,9 @@ std::string GLGizmoRotate3D::on_get_name() const
 
 bool GLGizmoRotate3D::on_is_activable() const
 {
-    return !m_parent.get_selection().is_empty();
+    // BBS: don't support rotate wipe tower
+    const Selection& selection = m_parent.get_selection();
+    return !m_parent.get_selection().is_empty() && !selection.is_wipe_tower();
 }
 
 void GLGizmoRotate3D::on_start_dragging()
@@ -530,9 +542,11 @@ GLGizmoRotate3D::RotoptimzeWindow::RotoptimzeWindow(ImGuiWrapper *   imgui,
         for (size_t i = 0; i < RotoptimizeJob::get_methods_count(); ++i) {
             if (ImGui::Selectable(RotoptimizeJob::get_method_name(i).c_str())) {
                 state.method_id = i;
+#ifdef SUPPORT_SLA_AUTO_ROTATE
                 wxGetApp().app_config->set("sla_auto_rotate",
                                            "method_id",
                                            std::to_string(state.method_id));
+#endif SUPPORT_SLA_AUTO_ROTATE
             }
 
             if (ImGui::IsItemHovered())

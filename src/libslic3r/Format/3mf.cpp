@@ -3063,10 +3063,10 @@ bool _3MF_Exporter::_add_custom_gcode_per_print_z_file_to_archive( mz_zip_archiv
             code_tree.put("<xmlattr>.color"     , code.color    );
             code_tree.put("<xmlattr>.extra"     , code.extra    );
 
-            // add gcode field data for the old version of the PrusaSlicer
-            std::string gcode = code.type == CustomGCode::ColorChange ? config->opt_string("color_change_gcode")    :
-                                code.type == CustomGCode::PausePrint  ? config->opt_string("pause_print_gcode")     :
-                                code.type == CustomGCode::Template    ? config->opt_string("template_custom_gcode") :
+            //BBS
+            std::string gcode = //code.type == CustomGCode::ColorChange ? config->opt_string("color_change_gcode")    :
+                                code.type == CustomGCode::PausePrint  ? config->opt_string("machine_pause_gcode")     :
+                                //code.type == CustomGCode::Template    ? config->opt_string("template_custom_gcode") :
                                 code.type == CustomGCode::ToolChange  ? "tool_change"   : code.extra; 
             code_tree.put("<xmlattr>.gcode"     , gcode   );
         }
@@ -3101,10 +3101,10 @@ bool _3MF_Exporter::_add_custom_gcode_per_print_z_file_to_archive( mz_zip_archiv
 //FIXME provide a version of PrusaSlicer that stored the project file (3MF).
 static void handle_legacy_project_loaded(unsigned int version_project_file, DynamicPrintConfig& config)
 {
-    if (! config.has("brim_separation")) {
+    if (! config.has("brim_object_gap")) {
         if (auto *opt_elephant_foot   = config.option<ConfigOptionFloat>("elefant_foot_compensation", false); opt_elephant_foot) {
             // Conversion from older PrusaSlicer which applied brim separation equal to elephant foot compensation.
-            auto *opt_brim_separation = config.option<ConfigOptionFloat>("brim_separation", true);
+            auto *opt_brim_separation = config.option<ConfigOptionFloat>("brim_object_gap", true);
             opt_brim_separation->value = opt_elephant_foot->value;
         }
     }

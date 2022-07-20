@@ -4,12 +4,58 @@
 #include <deque>
 #include <set>
 #include <unordered_map>
-
+#include <functional>
 #include <boost/filesystem/path.hpp>
 #include <boost/property_tree/ptree_fwd.hpp>
 
 #include "PrintConfig.hpp"
 #include "Semver.hpp"
+#include "ProjectTask.hpp"
+
+//BBS: change system directories
+#define PRESET_SYSTEM_DIR      "system"
+#define PRESET_USER_DIR        "user"
+#define PRESET_FILAMENT_NAME    "filament"
+#define PRESET_PRINT_NAME     "process"
+#define PRESET_PRINTER_NAME     "machine"
+#define PRESET_SLA_PRINT_NAME  "sla_print"
+#define PRESET_SLA_MATERIALS_NAME "sla_materials"
+
+//BBS: iot preset type strings
+#define PRESET_IOT_PRINTER_TYPE     "printer"
+#define PRESET_IOT_FILAMENT_TYPE    "filament"
+#define PRESET_IOT_PRINT_TYPE       "print"
+
+
+//BBS: add json support
+#define BBL_JSON_KEY_VERSION        "version"
+#define BBL_JSON_KEY_URL            "url"
+#define BBL_JSON_KEY_NAME           "name"
+#define BBL_JSON_KEY_DESCRIPTION    "description"
+#define BBL_JSON_KEY_FORCE_UPDATE   "force_update"
+#define BBL_JSON_KEY_MACHINE_MODEL_LIST     "machine_model_list"
+#define BBL_JSON_KEY_PROCESS_LIST   "process_list"
+#define BBL_JSON_KEY_SUB_PATH       "sub_path"
+#define BBL_JSON_KEY_FILAMENT_LIST  "filament_list"
+#define BBL_JSON_KEY_MACHINE_LIST   "machine_list"
+#define BBL_JSON_KEY_TYPE           "type"
+#define BBL_JSON_KEY_FROM           "from"
+#define BBL_JSON_KEY_SETTING_ID     "setting_id"
+#define BBL_JSON_KEY_BASE_ID        "base_id"
+#define BBL_JSON_KEY_USER_ID        "user_id"
+#define BBL_JSON_KEY_FILAMENT_ID    "filament_id"
+#define BBL_JSON_KEY_UPDATE_TIME    "updated_time"
+#define BBL_JSON_KEY_INHERITS       "inherits"
+#define BBL_JSON_KEY_INSTANTIATION  "instantiation"
+#define BBL_JSON_KEY_NOZZLE_DIAMETER            "nozzle_diameter"
+#define BBL_JSON_KEY_PRINTER_TECH                 "machine_tech"
+#define BBL_JSON_KEY_FAMILY                     "family"
+#define BBL_JSON_KEY_BED_MODEL                  "bed_model"
+#define BBL_JSON_KEY_BED_TEXTURE                "bed_texture"
+#define BBL_JSON_KEY_HOTEND_MODEL               "hotend_model"
+#define BBL_JSON_KEY_DEFAULT_MATERIALS          "default_materials"
+#define BBL_JSON_KEY_MODEL_ID                   "model_id"
+
 
 namespace Slic3r {
 
@@ -23,6 +69,11 @@ enum ConfigFileType
     CONFIG_FILE_TYPE_CONFIG,
     CONFIG_FILE_TYPE_CONFIG_BUNDLE,
 };
+
+//BBS: add a function to load the version from xxx.json
+extern Semver get_version_from_json(std::string file_path);
+//BBS: add a function to load the key-values from xxx.json
+extern int get_values_from_json(std::string file_path, std::vector<std::string>& keys, std::map<std::string, std::string>& key_values);
 
 extern ConfigFileType guess_config_file_type(const boost::property_tree::ptree &tree);
 
@@ -45,6 +96,8 @@ public:
         PrinterModel() {}
         std::string                 id;
         std::string                 name;
+        //BBS: this is internal id for the printer. Currently only used for searching in database
+        std::string                 model_id;
         PrinterTechnology           technology;
         std::string                 family;
         std::vector<PrinterVariant> variants;
@@ -52,6 +105,7 @@ public:
         // Vendor & Printer Model specific print bed model & texture.
         std::string 			 	bed_model;
         std::string 				bed_texture;
+        std::string                 hotend_model;
 
         PrinterVariant*       variant(const std::string &name) {
             for (auto &v : this->variants)
@@ -116,6 +170,8 @@ public:
         // This type is here to support PresetConfigSubstitutions for physical printers, however it does not belong to the Preset class,
         // PhysicalPrinter class is used instead.
         TYPE_PHYSICAL_PRINTER,
+        // BBS: model config
+        TYPE_MODEL,
     };
 
     Type                type        = TYPE_INVALID;
@@ -137,11 +193,15 @@ public:
     // Is this preset compatible with the currently active printer?
     bool                is_compatible = true;
 
-    bool                is_user() const { return ! this->is_default && ! this->is_system; }
+    //BBS: add type for project-embedded
+    bool                is_project_embedded = false;
+    ConfigSubstitutions *loading_substitutions{nullptr};
+    bool                is_user() const { return ! this->is_default && ! this->is_system && ! this->is_project_embedded; }
+    //bool                is_user() const { return ! this->is_default && ! this->is_system; }
 
     // Name of the preset, usually derived form the file name.
     std::string         name;
-    // File name of the preset. This could be a Print / Filament / Printer preset, 
+    // File name of the preset. This could be a Print / Filament / Printer preset,
     // or a Configuration file bundling the Print + Filament + Printer presets (in that case is_external and possibly is_system will be true),
     // or it could be a G-code (again, is_external will be true).
     std::string         file;
@@ -161,7 +221,28 @@ public:
     // and to match the "inherits" field of user profiles with updated system profiles.
     std::vector<std::string> renamed_from;
 
-    void                save();
+    //BBS
+    Semver              version;         // version of preset
+    std::string         ini_str;         // ini string of preset
+    std::string         setting_id;      // setting id in cloud database
+    std::string         filament_id;      // setting id in cloud database
+    std::string         user_id;         // preset user_id
+    std::string         base_id;         // base id of preset
+    std::string         sync_info;       // enum: "delete", "create", "update", ""
+    long long           updated_time{0};    //last updated time
+    std::map<std::string, std::string> key_values;
+
+    static std::string  get_type_string(Preset::Type type);
+    // get string type for iot
+    static std::string  get_iot_type_string(Preset::Type type);
+    static Preset::Type get_type_from_string(std::string type_str);
+    void                load_info(const std::string& file);
+    void                save_info(std::string file = "");
+    void                remove_files();
+
+    //BBS: add logic for only difference save
+    //if parent_config is null, save all keys, otherwise, only save difference
+    void                save(DynamicPrintConfig* parent_config);
 
     // Return a label of this preset, consisting of a name and a "(modified)" suffix, if this preset is dirty.
     std::string         label() const;
@@ -178,7 +259,7 @@ public:
 
     // Returns the "compatible_prints_condition".
     static std::string& compatible_prints_condition(DynamicPrintConfig &cfg) { return cfg.option<ConfigOptionString>("compatible_prints_condition", true)->value; }
-    std::string&        compatible_prints_condition() { 
+    std::string&        compatible_prints_condition() {
 		assert(this->type == TYPE_FILAMENT || this->type == TYPE_SLA_MATERIAL);
         return Preset::compatible_prints_condition(this->config);
     }
@@ -195,7 +276,7 @@ public:
     // Return a printer technology, return ptFFF if the printer technology is not set.
     static PrinterTechnology printer_technology(const DynamicPrintConfig &cfg) {
         auto *opt = cfg.option<ConfigOptionEnum<PrinterTechnology>>("printer_technology");
-        // The following assert may trigger when importing some legacy profile, 
+        // The following assert may trigger when importing some legacy profile,
         // but it is safer to keep it here to capture the cases where the "printer_technology" key is queried, where it should not.
 //        assert(opt != nullptr);
         return (opt == nullptr) ? ptFFF : opt->value;
@@ -212,6 +293,9 @@ public:
 
     // Sort lexicographically by a preset name. The preset name shall be unique across a single PresetCollection.
     bool                operator<(const Preset &other) const { return this->name < other.name; }
+
+    // special for upport G and Support W
+    std::string get_filament_type();
 
     static const std::vector<std::string>&  print_options();
     static const std::vector<std::string>&  filament_options();
@@ -233,8 +317,10 @@ public:
     // Report configuration fields, which are misplaced into a wrong group, remove them from the config.
     static std::string                      remove_invalid_keys(DynamicPrintConfig &config, const DynamicPrintConfig &default_config);
 
-protected:
+    // BBS: move constructor to public
     Preset(Type type, const std::string &name, bool is_default = false) : type(type), is_default(is_default), name(name) {}
+
+protected:
     Preset() = default;
 
     friend class        PresetCollection;
@@ -263,6 +349,9 @@ struct PresetConfigSubstitutions {
     enum class Source {
         UserFile,
         ConfigBundle,
+        //BBS: add cloud and project type
+        UserCloud,
+        ProjectFile,
     };
     Source                                  preset_source;
     // Source of the preset. It may be empty in case of a ConfigBundle being loaded.
@@ -280,16 +369,30 @@ class PresetCollection
 {
 public:
     // Initialize the PresetCollection with the "- default -" preset.
-    PresetCollection(Preset::Type type, const std::vector<std::string> &keys, const Slic3r::StaticPrintConfig &defaults, const std::string &default_name = "- default -");
+    PresetCollection(Preset::Type type, const std::vector<std::string> &keys, const Slic3r::StaticPrintConfig &defaults, const std::string &default_name = "Default Setting");
 
     typedef std::deque<Preset>::iterator Iterator;
     typedef std::deque<Preset>::const_iterator ConstIterator;
+    typedef std::function<void(Preset* preset, std::string sync_info)> SyncFunc;
+    //BBS get m_presets begin
+    Iterator        lbegin() { return m_presets.begin(); }
+    //BBS: validate_printers
+    bool            validate_printers(const std::string &name, DynamicPrintConfig& config, std::string &inherit);
+
     Iterator        begin() { return m_presets.begin() + m_num_default_presets; }
     ConstIterator   begin() const { return m_presets.cbegin() + m_num_default_presets; }
     ConstIterator   cbegin() const { return m_presets.cbegin() + m_num_default_presets; }
     Iterator        end() { return m_presets.end(); }
     ConstIterator   end() const { return m_presets.cend(); }
     ConstIterator   cend() const { return m_presets.cend(); }
+
+    //BBS
+    Iterator        erase(Iterator it) { return m_presets.erase(it); }
+    SyncFunc        sync_func{ nullptr };
+    void            set_sync_func(SyncFunc func) { sync_func = func; }
+    //BBS: mutex
+    void            lock() { m_mutex.lock(); }
+    void            unlock() { m_mutex.unlock(); }
 
     void            reset(bool delete_files);
 
@@ -305,6 +408,26 @@ public:
 
     // Load ini files of the particular type from the provided directory path.
     void            load_presets(const std::string &dir_path, const std::string &subdir, PresetsConfigSubstitutions& substitutions, ForwardCompatibilitySubstitutionRule rule);
+
+    //BBS: update user presets directory
+    void            update_user_presets_directory(const std::string& dir_path, const std::string& type);
+    void            save_user_presets(const std::string& dir_path, const std::string& type, std::vector<std::string>& need_to_delete_list);
+    bool            load_user_preset(std::string name, std::map<std::string, std::string> preset_values, PresetsConfigSubstitutions& substitutions, ForwardCompatibilitySubstitutionRule rule);
+    void            update_after_user_presets_loaded();
+    //BBS: get user presets
+    int             get_user_presets(std::vector<Preset>& result_presets);
+    void             set_sync_info_and_save(std::string name, std::string setting_id, std::string syncinfo);
+
+    //BBS: add function to generate differed preset for save
+    //the pointer should be freed by the caller
+    Preset* get_preset_differed_for_save(Preset& preset);
+    //BBS:get the differencen values to update
+    int get_differed_values_to_update(Preset& preset, std::map<std::string, std::string>& key_values);
+
+    //BBS: add project embedded presets logic
+    void load_project_embedded_presets(std::vector<Preset*>& project_presets, const std::string& type, PresetsConfigSubstitutions& substitutions, ForwardCompatibilitySubstitutionRule rule);
+    std::vector<Preset*> get_project_embedded_presets();
+    bool reset_project_embedded_presets();
 
     // Load a preset from an already parsed config file, insert it into the sorted sequence of presets
     // and select it, losing previous modifications.
@@ -331,13 +454,18 @@ public:
         const std::string           &original_name,
         // Config to initialize the preset from.
         const DynamicPrintConfig    &config,
+        //different settings list
+        const std::set<std::string> &different_settings_list,
         // Select the preset after loading?
-        LoadAndSelect                select = LoadAndSelect::Always);
+        LoadAndSelect                select = LoadAndSelect::Always,
+        const Semver                file_version = Semver(),
+        const std::string           filament_id = std::string());
 
     // Save the preset under a new name. If the name is different from the old one,
     // a new preset is stored into the list of presets.
     // All presets are marked as not modified and the new preset is activated.
-    void            save_current_preset(const std::string &new_name, bool detach = false);
+    //BBS: add project embedded preset logic
+    void            save_current_preset(const std::string &new_name, bool detach = false, bool save_to_project = false);
 
     // Delete the current preset, activate the first visible preset.
     // returns true if the preset was deleted successfully.
@@ -353,11 +481,21 @@ public:
     // Select a preset. If an invalid index is provided, the first visible preset is selected.
     Preset&         select_preset(size_t idx);
     // Return the selected preset, without the user modifications applied.
-    Preset&         get_selected_preset()       { return m_presets[m_idx_selected]; }
+    Preset&         get_selected_preset() {
+        //BBS fix crash when m_idx_selected == -1, give a default value
+        if ((m_idx_selected < 0) || (m_idx_selected >= m_presets.size())) {
+            select_preset(first_visible_idx());
+        }
+        return m_presets[m_idx_selected];
+    }
     const Preset&   get_selected_preset() const { return m_presets[m_idx_selected]; }
     size_t          get_selected_idx()    const { return m_idx_selected; }
     // Returns the name of the selected preset, or an empty string if no preset is selected.
-    std::string     get_selected_preset_name() const { return (m_idx_selected == size_t(-1)) ? std::string() : this->get_selected_preset().name; }
+    std::string     get_selected_preset_name() const {
+        if (m_idx_selected == size_t(-1) || m_idx_selected >= m_presets.size())
+            return std::string();
+        return this->get_selected_preset().name;
+    }
     // For the current edited preset, return the parent preset if there is one.
     // If there is no parent preset, nullptr is returned.
     // The parent preset may be a system preset or a user preset, which will be
@@ -390,7 +528,10 @@ public:
 	const Preset&   default_preset(size_t idx = 0) const { assert(idx < m_num_default_presets); return m_presets[idx]; }
 	virtual const Preset& default_preset_for(const DynamicPrintConfig & /* config */) const { return this->default_preset(); }
     // Return a preset by an index. If the preset is active, a temporary copy is returned.
-    Preset&         preset(size_t idx)          { return (idx == m_idx_selected) ? m_edited_preset : m_presets[idx]; }
+    Preset&         preset(size_t idx, bool real = false) {
+        if (real) return m_presets[idx];
+        return (idx == m_idx_selected) ? m_edited_preset : m_presets[idx];
+    }
     const Preset&   preset(size_t idx) const    { return const_cast<PresetCollection*>(this)->preset(idx); }
     void            discard_current_changes() {
         m_presets[m_idx_selected].reset_dirty();
@@ -400,8 +541,9 @@ public:
 
     // Return a preset by its name. If the preset is active, a temporary copy is returned.
     // If a preset is not found by its name, null is returned.
-    Preset*         find_preset(const std::string &name, bool first_visible_if_not_found = false);
-    const Preset*   find_preset(const std::string &name, bool first_visible_if_not_found = false) const 
+    // BBS return real pointer if set real = true
+    Preset*         find_preset(const std::string &name, bool first_visible_if_not_found = false, bool real = false);
+    const Preset*   find_preset(const std::string &name, bool first_visible_if_not_found = false) const
         { return const_cast<PresetCollection*>(this)->find_preset(name, first_visible_if_not_found); }
 
     size_t          first_visible_idx() const;
@@ -415,7 +557,7 @@ public:
         size_t i_compatible = n;
         int    match_quality = -1;
         for (; i < n; ++ i)
-            // Since we use the filament selection from Wizard, it's needed to control the preset visibility too 
+            // Since we use the filament selection from Wizard, it's needed to control the preset visibility too
             if (m_presets[i].is_compatible && m_presets[i].is_visible) {
                 int this_match_quality = prefered_condition(m_presets[i]);
                 if (this_match_quality > match_quality) {
@@ -425,9 +567,9 @@ public:
                     // Store the first compatible profile with highest match quality into i_compatible.
                     i_compatible = i;
                     match_quality = this_match_quality;
-                } 
+                }
             }
-        return (i_compatible == n) ? 
+        return (i_compatible == n) ?
             // No compatible preset found, return the default preset.
             0 :
             // Compatible preset found.
@@ -455,7 +597,7 @@ public:
     {
         if (this->update_compatible_internal(active_printer, active_print, select_other_if_incompatible) == (size_t)-1)
             // Find some other compatible preset, or the "-- default --" preset.
-            this->select_preset(this->first_compatible_idx(prefered_condition));        
+            this->select_preset(this->first_compatible_idx(prefered_condition));
     }
     void            update_compatible(const PresetWithVendorProfile &active_printer, const PresetWithVendorProfile *active_print, PresetSelectCompatibleType select_other_if_incompatible)
         { this->update_compatible(active_printer, active_print, select_other_if_incompatible, [](const Preset&) -> int { return 0; }); }
@@ -463,7 +605,7 @@ public:
     size_t          num_visible() const { return std::count_if(m_presets.begin(), m_presets.end(), [](const Preset &preset){return preset.is_visible;}); }
 
     // Compare the content of get_selected_preset() with get_edited_preset() configs, return true if they differ.
-    bool                        current_is_dirty() const 
+    bool                        current_is_dirty() const
         { return is_dirty(&this->get_edited_preset(), &this->get_selected_preset()); }
     // Compare the content of get_selected_preset() with get_edited_preset() configs, return the list of keys where they differ.
     std::vector<std::string>    current_dirty_options(const bool deep_compare = false) const
@@ -473,7 +615,7 @@ public:
         { return dirty_options(&this->get_edited_preset(), this->get_selected_preset_parent(), deep_compare); }
 
     // Compare the content of get_saved_preset() with get_edited_preset() configs, return true if they differ.
-    bool                        saved_is_dirty() const 
+    bool                        saved_is_dirty() const
         { return is_dirty(&this->get_edited_preset(), &m_saved_preset); }
     // Compare the content of get_saved_preset() with get_edited_preset() configs, return the list of keys where they differ.
 //    std::vector<std::string>    saved_dirty_options() const
@@ -489,7 +631,7 @@ public:
     // Update a dirty flag of the current preset
     // Return true if the dirty flag changed.
     bool            update_dirty();
-    
+
     // Select a profile by its name. Return true if the selection changed.
     // Without force, the selection is only updated if the index changes.
     // With force, the changes are reverted if the new index is the same as the old index.
@@ -505,7 +647,8 @@ protected:
     // Copy constructor and copy operators are not to be used from outside PresetBundle,
     // as the Profile::vendor points to an instance of VendorProfile stored at parent PresetBundle!
     PresetCollection(const PresetCollection &other) = default;
-    PresetCollection& operator=(const PresetCollection &other) = default;
+    //BBS: add operator= logic insteadof default
+    PresetCollection& operator=(const PresetCollection &other);
     // After copying a collection with the default operators above, call this function
     // to adjust Profile::vendor pointers.
     void            update_vendor_ptrs_after_copy(const VendorMap &vendors);
@@ -556,11 +699,13 @@ private:
 public:
     static bool                     is_dirty(const Preset *edited, const Preset *reference);
     static std::vector<std::string> dirty_options(const Preset *edited, const Preset *reference, const bool deep_compare = false);
+    //BBS: add function for dirty_options_without_option_list
+    static std::vector<std::string> dirty_options_without_option_list(const Preset *edited, const Preset *reference, const std::set<std::string>& option_ignore_list, const bool deep_compare = false);
 private:
     // Type of this PresetCollection: TYPE_PRINT, TYPE_FILAMENT or TYPE_PRINTER.
     Preset::Type            m_type;
     // List of presets, starting with the "- default -" preset.
-    // Use deque to force the container to allocate an object per each entry, 
+    // Use deque to force the container to allocate an object per each entry,
     // so that the addresses of the presets don't change during resizing of the container.
     std::deque<Preset>      m_presets;
     // System profiles may have aliases. Map to the full profile name.
@@ -583,6 +728,9 @@ private:
 
     // to access select_preset_by_name_strict() and the default & copy constructors.
     friend class PresetBundle;
+
+    //BBS: mutex
+    std::mutex          m_mutex;
 };
 
 // Printer supports the FFF and SLA technologies, with different set of configuration values,
@@ -590,7 +738,7 @@ private:
 class PrinterPresetCollection : public PresetCollection
 {
 public:
-    PrinterPresetCollection(Preset::Type type, const std::vector<std::string> &keys, const Slic3r::StaticPrintConfig &defaults, const std::string &default_name = "- default -") :
+    PrinterPresetCollection(Preset::Type type, const std::vector<std::string> &keys, const Slic3r::StaticPrintConfig &defaults, const std::string &default_name = "Default Printer") :
 		PresetCollection(type, keys, defaults, default_name) {}
 
     const Preset&   default_preset_for(const DynamicPrintConfig &config) const override;
@@ -611,6 +759,7 @@ namespace PresetUtils {
 	const VendorProfile::PrinterModel* system_printer_model(const Preset &preset);
     std::string system_printer_bed_model(const Preset& preset);
     std::string system_printer_bed_texture(const Preset& preset);
+    std::string system_printer_hotend_model(const Preset& preset);
 } // namespace PresetUtils
 
 
@@ -643,10 +792,11 @@ public:
 
     const std::set<std::string>&            get_preset_names() const;
 
-    bool                has_empty_config() const;
     void                update_preset_names_in_config();
 
-    void                save() { this->config.save(this->file); }
+    //BBS: change to json format
+    //void                save() { this->config.save(this->file); }
+    void                save(DynamicPrintConfig* parent_config) { this->config.save_to_json(this->file, std::string("Physical_Printer"), std::string("User"), std::string(SLIC3R_VERSION)); }
     void                save(const std::string& file_name_from, const std::string& file_name_to);
 
     void                update_from_preset(const Preset& preset);
@@ -661,7 +811,7 @@ public:
     // Return a printer technology, return ptFFF if the printer technology is not set.
     static PrinterTechnology printer_technology(const DynamicPrintConfig& cfg) {
         auto* opt = cfg.option<ConfigOptionEnum<PrinterTechnology>>("printer_technology");
-        // The following assert may trigger when importing some legacy profile, 
+        // The following assert may trigger when importing some legacy profile,
         // but it is safer to keep it here to capture the cases where the "printer_technology" key is queried, where it should not.
         return (opt == nullptr) ? ptFFF : opt->value;
     }
@@ -796,10 +946,8 @@ private:
         return const_cast<PhysicalPrinterCollection*>(this)->find_printer_internal(name);
     }
 
-    PhysicalPrinter* find_printer_with_same_config( const DynamicPrintConfig &config);
-
     // List of printers
-    // Use deque to force the container to allocate an object per each entry, 
+    // Use deque to force the container to allocate an object per each entry,
     // so that the addresses of the presets don't change during resizing of the container.
     std::deque<PhysicalPrinter> m_printers;
 

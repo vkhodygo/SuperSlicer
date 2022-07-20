@@ -16,98 +16,189 @@
 #include "libslic3r/Utils.hpp"
 #include "GUI.hpp"
 #include "I18N.hpp"
-#include "ConfigWizard.hpp"
+//#include "ConfigWizard.hpp"
 #include "wxExtensions.hpp"
 #include "slic3r/GUI/MainFrame.hpp"
 #include "GUI_App.hpp"
+
+#define DESIGN_INPUT_SIZE wxSize(FromDIP(100), -1)
 
 namespace Slic3r {
 namespace GUI {
 
 
 MsgDialog::MsgDialog(wxWindow *parent, const wxString &title, const wxString &headline, long style, wxBitmap bitmap)
-	: wxDialog(parent ? parent : dynamic_cast<wxWindow*>(wxGetApp().mainframe), wxID_ANY, title, wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
+	: DPIDialog(parent ? parent : dynamic_cast<wxWindow*>(wxGetApp().mainframe), wxID_ANY, title, wxDefaultPosition, wxSize(360, -1),wxDEFAULT_DIALOG_STYLE)
 	, boldfont(wxGetApp().normal_font())
 	, content_sizer(new wxBoxSizer(wxVERTICAL))
 	, btn_sizer(new wxBoxSizer(wxHORIZONTAL))
 {
 	boldfont.SetWeight(wxFONTWEIGHT_BOLD);
-
-    this->SetFont(wxGetApp().normal_font());
-    this->CenterOnParent();
+    SetBackgroundColour(0xFFFFFF);
+    SetFont(wxGetApp().normal_font());
+    CenterOnParent();
 
     auto *main_sizer = new wxBoxSizer(wxVERTICAL);
 	auto *topsizer = new wxBoxSizer(wxHORIZONTAL);
 	auto *rightsizer = new wxBoxSizer(wxVERTICAL);
 
-	auto *headtext = new wxStaticText(this, wxID_ANY, headline);
-	headtext->SetFont(boldfont);
-    headtext->Wrap(CONTENT_WIDTH*wxGetApp().em_unit());
-	rightsizer->Add(headtext);
-	rightsizer->AddSpacer(VERT_SPACING);
+	//auto *headtext = new wxStaticText(this, wxID_ANY, headline);
+	//headtext->SetFont(boldfont);
+ //   headtext->Wrap(CONTENT_WIDTH*wxGetApp().em_unit());
+	//rightsizer->Add(headtext);
+	//rightsizer->AddSpacer(VERT_SPACING);
 
 	rightsizer->Add(content_sizer, 1, wxEXPAND);
-    btn_sizer->AddStretchSpacer();
 
 	logo = new wxStaticBitmap(this, wxID_ANY, bitmap.IsOk() ? bitmap : wxNullBitmap);
+    topsizer->Add(LOGO_SPACING, 0, 0, wxEXPAND, 0);
+	topsizer->Add(logo, 0, wxTOP, BORDER);
+    topsizer->Add(LOGO_GAP, 0, 0, wxEXPAND, 0);
+	topsizer->Add(rightsizer, 1, wxTOP | wxEXPAND, BORDER);
 
-	topsizer->Add(logo, 0, wxALL, BORDER);
-	topsizer->Add(rightsizer, 1, wxTOP | wxBOTTOM | wxRIGHT | wxEXPAND, BORDER);
+    btn_sizer->AddStretchSpacer();
 
     main_sizer->Add(topsizer, 1, wxEXPAND);
-    main_sizer->Add(new StaticLine(this), 0, wxEXPAND | wxLEFT | wxRIGHT, HORIZ_SPACING);
-    main_sizer->Add(btn_sizer, 0, wxALL | wxEXPAND, VERT_SPACING);
+    main_sizer->Add(btn_sizer, 0, wxBOTTOM | wxRIGHT | wxEXPAND, BORDER);
 
     apply_style(style);
 
 	SetSizerAndFit(main_sizer);
 }
 
+ MsgDialog::~MsgDialog()
+{
+    for (auto mb : m_buttons) { delete mb.second->buttondata ; delete mb.second; }
+}
+
+void MsgDialog::on_dpi_changed(const wxRect &suggested_rect) 
+ {
+     if (m_buttons.size() > 0) {
+         MsgButtonsHash::iterator i = m_buttons.begin();
+
+         while (i != m_buttons.end()) {
+             MsgButton *bd   = i->second;
+             wxSize     bsize;
+
+
+             switch (bd->buttondata->type) {
+                case ButtonSizeNormal:bsize = MSG_DIALOG_BUTTON_SIZE;break;
+                case ButtonSizeMiddle: bsize = MSG_DIALOG_MIDDLE_BUTTON_SIZE; break;
+                case ButtonSizeLong: bsize = MSG_DIALOG_LONG_BUTTON_SIZE; break;
+                default: break;
+             }
+
+             bd->buttondata->button->SetMinSize(bsize);
+             i++;
+         }
+     }
+ }
+
 void MsgDialog::SetButtonLabel(wxWindowID btn_id, const wxString& label, bool set_focus/* = false*/) 
 {
-    if (wxButton* btn = get_button(btn_id)) {
+    if (Button* btn = get_button(btn_id)) {
         btn->SetLabel(label);
         if (set_focus)
             btn->SetFocus();
     }
 }
 
-wxButton* MsgDialog::add_button(wxWindowID btn_id, bool set_focus /*= false*/, const wxString& label/* = wxString()*/)
+Button* MsgDialog::add_button(wxWindowID btn_id, bool set_focus /*= false*/, const wxString& label/* = wxString()*/)
 {
-    wxButton* btn = new wxButton(this, btn_id, label);
-    if (set_focus) {
-        btn->SetFocus();
-        // For non-MSW platforms SetFocus is not enought to use it as default, when the dialog is closed by ENTER
-        // We have to set this button as the (permanently) default one in its dialog
-        // See https://twitter.com/ZMelmed/status/1472678454168539146
-        btn->SetDefault();
+    Button* btn = new Button(this, label);
+    ButtonSizeType type;
+
+    if (label.length() < 5) {
+        type = ButtonSizeNormal;
+        btn->SetMinSize(MSG_DIALOG_BUTTON_SIZE); }
+    else if (label.length() >= 5 && label.length() < 8) {
+        type = ButtonSizeMiddle;
+        btn->SetMinSize(MSG_DIALOG_MIDDLE_BUTTON_SIZE);
+    } else {
+        type = ButtonSizeLong;
+        btn->SetMinSize(MSG_DIALOG_LONG_BUTTON_SIZE);
     }
-    btn_sizer->Add(btn, 0, wxLEFT | wxALIGN_CENTER_VERTICAL, HORIZ_SPACING);
-    btn->Bind(wxEVT_BUTTON, [this, btn_id](wxCommandEvent&) { this->EndModal(btn_id); });
+    
+    btn->SetCornerRadius(12);
+    StateColor btn_bg_green(
+        std::pair<wxColour, int>(wxColour(27, 136, 68), StateColor::Pressed),
+        std::pair<wxColour, int>(wxColour(61, 203, 115), StateColor::Hovered),
+        std::pair<wxColour, int>(wxColour(0, 174, 66), StateColor::Normal)
+    );
+
+    StateColor btn_bd_green(
+        std::pair<wxColour, int>(wxColour(0, 174, 66), StateColor::Normal)
+    );
+
+    StateColor btn_text_green(
+        std::pair<wxColour, int>(wxColour(255, 255, 255), StateColor::Normal)
+    );
+
+    StateColor btn_bg_white(
+        std::pair<wxColour, int>(wxColour(206, 206, 206), StateColor::Pressed),
+        std::pair<wxColour, int>(wxColour(238, 238, 238), StateColor::Hovered),
+        std::pair<wxColour, int>(wxColour(255, 255, 255), StateColor::Normal)
+    );
+
+    StateColor btn_bd_white(
+        std::pair<wxColour, int>(wxColour(38, 46, 48), StateColor::Normal)
+    );
+
+    StateColor btn_text_white(
+        std::pair<wxColour, int>(wxColour(38, 46, 48), StateColor::Normal)
+    );
+
+    if (btn_id == wxID_OK || btn_id == wxID_YES) {
+        btn->SetBackgroundColor(btn_bg_green);
+        btn->SetBorderColor(btn_bd_green);
+        btn->SetTextColor(btn_text_green);
+    }
+
+    if (btn_id == wxID_CANCEL || btn_id == wxID_NO) {
+        btn->SetBackgroundColor(btn_bg_white);
+        btn->SetBorderColor(btn_bd_white);
+        btn->SetTextColor(btn_text_white);
+    }
+
+    if (set_focus)
+        btn->SetFocus();
+    btn_sizer->Add(btn, 0, wxRIGHT | wxALIGN_CENTER_VERTICAL, BTN_SPACING);
+    btn->Bind(wxEVT_BUTTON, [this, btn_id](wxCommandEvent&) { EndModal(btn_id); });
+
+    MsgButton *mb = new MsgButton;
+    ButtonData *bd = new ButtonData;
+
+    bd->button = btn;
+    bd->type   = type;
+
+    mb->id        = wxString::Format("%d", m_buttons.size());
+    mb->buttondata = bd;
+    m_buttons[ wxString::Format("%d", m_buttons.size())] = mb;
     return btn;
 };
 
-wxButton* MsgDialog::get_button(wxWindowID btn_id){
-    return static_cast<wxButton*>(FindWindowById(btn_id, this));
+Button* MsgDialog::get_button(wxWindowID btn_id){
+    return static_cast<Button*>(FindWindowById(btn_id, this));
 }
 
 void MsgDialog::apply_style(long style)
 {
-    if (style & wxOK)       add_button(wxID_OK, true);
-    if (style & wxYES)      add_button(wxID_YES, true);
-    if (style & wxNO)       add_button(wxID_NO);
-    if (style & wxCANCEL)   add_button(wxID_CANCEL);
+    if (style & wxOK)       add_button(wxID_OK, true, _L("OK"));
+    if (style & wxYES)      add_button(wxID_YES, true, _L("Yes"));
+    if (style & wxNO)       add_button(wxID_NO, false,_L("No"));
+    if (style & wxCANCEL)   add_button(wxID_CANCEL, false, _L("Cancel"));
 
-    logo->SetBitmap( create_scaled_bitmap(style & wxICON_WARNING        ? "exclamation" :
+    logo->SetBitmap( create_scaled_bitmap(style & wxAPPLY        ? "completed" :
+                                          style & wxICON_WARNING        ? "obj_warning" :
                                           style & wxICON_INFORMATION    ? "info"        :
-                                          style & wxICON_QUESTION       ? "question"    : "PrusaSlicer", this, 64, style & wxICON_ERROR));
+                                          style & wxICON_QUESTION       ? "question"    : "BambuStudio", this, 64, style & wxICON_ERROR));
 }
 
 void MsgDialog::finalize()
 {
     wxGetApp().UpdateDlgDarkUI(this);
     Fit();
-    this->CenterOnParent();
+    CenterOnParent();
 }
 
 
@@ -200,14 +291,14 @@ static void add_msg_content(wxWindow* parent, wxBoxSizer* content_sizer, wxStrin
 // ErrorDialog
 
 ErrorDialog::ErrorDialog(wxWindow *parent, const wxString &msg, bool monospaced_font)
-    : MsgDialog(parent, wxString::Format(_(L("%s error")), SLIC3R_APP_NAME), 
-                        wxString::Format(_(L("%s has encountered an error")), SLIC3R_APP_NAME), wxOK)
+    : MsgDialog(parent, wxString::Format(_(L("%s error")), SLIC3R_APP_FULL_NAME), 
+                        wxString::Format(_(L("%s has encountered an error")), SLIC3R_APP_FULL_NAME), wxOK)
 	, msg(msg)
 {
     add_msg_content(this, content_sizer, msg, monospaced_font);
 
 	// Use a small bitmap with monospaced font, as the error text will not be wrapped.
-	logo->SetBitmap(create_scaled_bitmap("PrusaSlicer_192px_grayscale.png", this, monospaced_font ? 48 : /*1*/84));
+	logo->SetBitmap(create_scaled_bitmap("BambuStudio_192px_grayscale.png", this, monospaced_font ? 48 : /*1*/84));
 
     SetMaxSize(wxSize(-1, CONTENT_MAX_HEIGHT*wxGetApp().em_unit()));
 
@@ -220,8 +311,8 @@ WarningDialog::WarningDialog(wxWindow *parent,
                              const wxString& message,
                              const wxString& caption/* = wxEmptyString*/,
                              long style/* = wxOK*/)
-    : MsgDialog(parent, caption.IsEmpty() ? wxString::Format(_L("%s warning"), SLIC3R_APP_NAME) : caption, 
-                        wxString::Format(_L("%s has a warning")+":", SLIC3R_APP_NAME), style)
+    : MsgDialog(parent, caption.IsEmpty() ? wxString::Format(_L("%s warning"), SLIC3R_APP_FULL_NAME) : caption, 
+                        wxString::Format(_L("%s has a warning")+":", SLIC3R_APP_FULL_NAME), style)
 {
     add_msg_content(this, content_sizer, message);
     finalize();
@@ -234,7 +325,7 @@ MessageDialog::MessageDialog(wxWindow* parent,
     const wxString& message,
     const wxString& caption/* = wxEmptyString*/,
     long style/* = wxOK*/)
-    : MsgDialog(parent, caption.IsEmpty() ? wxString::Format(_L("%s info"), SLIC3R_APP_NAME) : caption, wxEmptyString, style)
+    : MsgDialog(parent, caption.IsEmpty() ? wxString::Format(_L("%s info"), SLIC3R_APP_FULL_NAME) : caption, wxEmptyString, style)
 {
     add_msg_content(this, content_sizer, message);
     finalize();
@@ -247,7 +338,7 @@ RichMessageDialog::RichMessageDialog(wxWindow* parent,
     const wxString& message,
     const wxString& caption/* = wxEmptyString*/,
     long style/* = wxOK*/)
-    : MsgDialog(parent, caption.IsEmpty() ? wxString::Format(_L("%s info"), SLIC3R_APP_NAME) : caption, wxEmptyString, style)
+    : MsgDialog(parent, caption.IsEmpty() ? wxString::Format(_L("%s info"), SLIC3R_APP_FULL_NAME) : caption, wxEmptyString, style)
 {
     add_msg_content(this, content_sizer, message);
 
@@ -273,15 +364,31 @@ int RichMessageDialog::ShowModal()
 #endif
 
 // InfoDialog
-
 InfoDialog::InfoDialog(wxWindow* parent, const wxString &title, const wxString& msg, bool is_marked_msg/* = false*/, long style/* = wxOK | wxICON_INFORMATION*/)
-	: MsgDialog(parent, wxString::Format(_L("%s information"), SLIC3R_APP_NAME), title, style)
+    : MsgDialog(parent, wxString::Format(_L("%s information"), SLIC3R_APP_FULL_NAME), title, style)
 	, msg(msg)
 {
     add_msg_content(this, content_sizer, msg, false, is_marked_msg);
     finalize();
 }
 
+// InfoDialog
+DownloadDialog::DownloadDialog(wxWindow *parent, const wxString &msg, const wxString &title, bool is_marked_msg /* = false*/, long style /* = wxOK | wxICON_INFORMATION*/)
+    : MsgDialog(parent, title, msg, style), msg(msg)
+{
+    add_button(wxID_YES, true, _L("Download"));
+    add_button(wxID_CANCEL, true, _L("Skip"));
+    
+    finalize();
+}
+
+
+void DownloadDialog::SetExtendedMessage(const wxString &extendedMessage) 
+{
+    add_msg_content(this, content_sizer, msg + "\n" + extendedMessage, false, false);
+    Layout();
+    Fit();
+}
 
 }
 }

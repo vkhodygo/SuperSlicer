@@ -230,7 +230,7 @@ wxBitmap* BitmapCache::insert_raw_rgba(const std::string &bitmap_key, unsigned w
 }
 
 wxBitmap* BitmapCache::load_png(const std::string &bitmap_name, unsigned width, unsigned height,
-    const bool grayscale/* = false*/)
+    const bool grayscale/* = false*/, const float scale_in_center/* = 0*/) // BBS: support resize by fill border
 {
     std::string bitmap_key = bitmap_name + ( height !=0 ? 
                                            "-h" + std::to_string(height) : 
@@ -246,13 +246,21 @@ wxBitmap* BitmapCache::load_png(const std::string &bitmap_name, unsigned width, 
         image.GetWidth() == 0 || image.GetHeight() == 0)
         return nullptr;
 
+    if (height == 0 && width == 0)
+        height = image.GetHeight();
+
     if (height != 0 && unsigned(image.GetHeight()) != height)
         width   = unsigned(0.5f + float(image.GetWidth()) * height / image.GetHeight());
     else if (width != 0 && unsigned(image.GetWidth()) != width)
         height  = unsigned(0.5f + float(image.GetHeight()) * width / image.GetWidth());
 
-    if (height != 0 && width != 0)
-        image.Rescale(width, height, wxIMAGE_QUALITY_BILINEAR);
+    if (height != 0 && width != 0) {
+        // BBS: support resize by fill border
+        if (scale_in_center > 0)
+            image.Resize({ (int)width, (int)height }, { (int)(width - image.GetWidth()) / 2, (int)(height - image.GetHeight()) / 2 });
+        else
+            image.Rescale(width, height, wxIMAGE_QUALITY_BILINEAR);
+    }
 
     if (grayscale)
         image = image.ConvertToGreyscale(m_gs, m_gs, m_gs);
@@ -298,7 +306,7 @@ error:
 }
 
 wxBitmap* BitmapCache::load_svg(const std::string &bitmap_name, unsigned target_width, unsigned target_height, 
-    const bool grayscale/* = false*/, const bool dark_mode/* = false*/, const std::string& new_color /*= ""*/)
+    const bool grayscale/* = false*/, const bool dark_mode/* = false*/, const std::string& new_color /*= ""*/, const float scale_in_center/* = 0*/)
 {
     std::string bitmap_key = bitmap_name + ( target_height !=0 ? 
                                            "-h" + std::to_string(target_height) : 
@@ -323,6 +331,9 @@ wxBitmap* BitmapCache::load_svg(const std::string &bitmap_name, unsigned target_
     if (image == nullptr)
         return nullptr;
 
+    if (target_height == 0 && target_width == 0)
+        target_height = image->height;
+
     target_height != 0 ? target_height *= m_scale : target_width *= m_scale;
 
     float svg_scale = target_height != 0 ? 
@@ -344,7 +355,13 @@ wxBitmap* BitmapCache::load_svg(const std::string &bitmap_name, unsigned target_
     }
 
     std::vector<unsigned char> data(n_pixels * 4, 0);
-    ::nsvgRasterize(rast, image, 0, 0, svg_scale, data.data(), width, height, width * 4);
+    // BBS: support resize by fill border
+    if (scale_in_center > 0) {
+        int w = (int)(image->width * scale_in_center);
+        int h = (int)(image->height * scale_in_center);
+        ::nsvgRasterize(rast, image, 0, 0, scale_in_center, data.data() + int(height - h) / 2 * width * 4 + int(width - w) / 2 * 4, w, h, width * 4);
+    } else
+        ::nsvgRasterize(rast, image, 0, 0, svg_scale, data.data(), width, height, width * 4);
     ::nsvgDeleteRasterizer(rast);
     ::nsvgDelete(image);
 

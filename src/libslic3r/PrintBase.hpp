@@ -16,7 +16,16 @@
 
 namespace Slic3r {
 
-class CanceledException : public std::exception {
+// BBS: error with object
+struct StringObjectException
+{
+    std::string string;
+    ObjectBase const *object = nullptr;
+    std::string opt_key;
+};
+
+class CanceledException : public std::exception
+{
 public:
    const char* what() const throw() { return "Background processing has been canceled"; }
 };
@@ -32,6 +41,15 @@ public:
     enum class WarningLevel {
         NON_CRITICAL,
         CRITICAL
+    };
+
+    enum SlicingNotificationType
+    {
+        SlicingDefaultNotification = 0,    //normal status update, called by set_status
+        SlicingReplaceInitEmptyLayers,
+        SlicingNeedSupportOn,
+        SlicingEmptyGcodeLayers,
+        SlicingGcodeOverlap
     };
 
     typedef size_t TimeStamp;
@@ -100,7 +118,7 @@ public:
         return this->state_with_timestamp(step, mtx).state == DONE;
     }
 
-    StateWithTimeStamp state_with_timestamp_unguarded(StepType step) const { 
+    StateWithTimeStamp state_with_timestamp_unguarded(StepType step) const {
         return m_state[step];
     }
 
@@ -270,23 +288,23 @@ public:
         assert(state.state == STARTED);
         std::pair<StepType, bool> retval(static_cast<StepType>(m_step_active), true);
         // Does a warning of the same level and message or message_id exist already?
-		auto it = (message_id == 0) ? 
+        auto it = (message_id == 0) ?
             std::find_if(state.warnings.begin(), state.warnings.end(), [&message](const auto &w) { return w.message_id == 0 && w.message == message; }) :
             std::find_if(state.warnings.begin(), state.warnings.end(), [message_id](const auto& w) { return w.message_id == message_id; });
-    	if (it == state.warnings.end())
-    		// No, create a new warning and update UI.
-        	state.warnings.emplace_back(PrintStateBase::Warning{ warning_level, true, message, message_id });
+        if (it == state.warnings.end())
+            // No, create a new warning and update UI.
+            state.warnings.emplace_back(PrintStateBase::Warning{ warning_level, true, message, message_id });
         else if (it->message != message || it->level != warning_level) {
-        	// Yes, however it needs an update.
-        	it->message = message;
-        	it->level 	= warning_level;
-        	it->current = true;
+            // Yes, however it needs an update.
+            it->message = message;
+            it->level 	= warning_level;
+            it->current = true;
         } else if (it->current)
-        	// Yes, and it is current. Don't update UI.
-        	retval.second = false;
+            // Yes, and it is current. Don't update UI.
+            retval.second = false;
         else
-        	// Yes, but it is not current. Mark it as current.
-        	it->current = true;
+            // Yes, but it is not current. Mark it as current.
+            it->current = true;
         return retval;
     }
 
@@ -315,7 +333,9 @@ protected:
 	// Notify UI about a new warning of a milestone "step" on this PrintObjectBase.
 	// The UI will be notified by calling a status callback registered on print.
 	// If no status callback is registered, the message is printed to console.
-	void 				   				status_update_warnings(PrintBase *print, int step, PrintStateBase::WarningLevel warning_level, const std::string &message);
+    void status_update_warnings(PrintBase *print, int step, PrintStateBase::WarningLevel warning_level,
+        const std::string &message, PrintStateBase::SlicingNotificationType message_id = PrintStateBase::SlicingDefaultNotification);
+    void emptylayer_update_msg(PrintBase* print, int type, const std::string& message, bool overwrite);
 
     ModelObject                  *m_model_object;
 };
@@ -362,7 +382,8 @@ public:
     virtual std::vector<ObjectID> print_object_ids() const = 0;
 
     // Validate the print, return empty string if valid, return error if process() cannot (or should not) be started.
-    virtual std::string     validate(std::string* warning = nullptr) const { return std::string(); }
+    //BBS: add more paremeters to validate
+    virtual StringObjectException validate(StringObjectException *warning = nullptr, Polygons* collison_polygons = nullptr, std::vector<std::pair<Polygon, float>>* height_polygons = nullptr) const { return {}; }
 
     enum ApplyStatus {
         // No change after the Print::apply() call.
@@ -396,11 +417,21 @@ public:
     virtual void            finalize() {}
 
     struct SlicingStatus {
-		SlicingStatus(int percent, const std::string &text, unsigned int flags = 0) : percent(percent), text(text), flags(flags) {}
-        SlicingStatus(const PrintBase &print, int warning_step) : 
-            flags(UPDATE_PRINT_STEP_WARNINGS), warning_object_id(print.id()), warning_step(warning_step) {}
-        SlicingStatus(const PrintObjectBase &print_object, int warning_step) : 
-            flags(UPDATE_PRINT_OBJECT_STEP_WARNINGS), warning_object_id(print_object.id()), warning_step(warning_step) {}
+        SlicingStatus(int percent, const std::string &text, unsigned int flags = 0, int warning_step = -1,
+            PrintStateBase::SlicingNotificationType  msg_type = PrintStateBase::SlicingDefaultNotification) :
+            percent(percent), text(text), flags(flags), warning_step(warning_step), message_type(msg_type)
+        {
+        }
+        SlicingStatus(const PrintBase &print, int warning_step, const std::string& text,
+            PrintStateBase::SlicingNotificationType  msg_type = PrintStateBase::SlicingDefaultNotification) :
+            flags(UPDATE_PRINT_STEP_WARNINGS), warning_object_id(print.id()), text(text), warning_step(warning_step), message_type(msg_type)
+        {
+        }
+        SlicingStatus(const PrintObjectBase &print_object, int warning_step, const std::string& text,
+            PrintStateBase::SlicingNotificationType  msg_type = PrintStateBase::SlicingDefaultNotification) :
+            flags(UPDATE_PRINT_OBJECT_STEP_WARNINGS), warning_object_id(print_object.id()), text(text), warning_step(warning_step), message_type(msg_type)
+        {
+        }
         int             percent { -1 };
         std::string     text;
         // Bitmap of flags.
@@ -420,6 +451,8 @@ public:
         ObjectID        warning_object_id;
         // For which Print or PrintObject step a new warning is being issued?
         int             warning_step { -1 };
+
+        PrintStateBase::SlicingNotificationType  message_type {PrintStateBase::SlicingDefaultNotification};
     };
     typedef std::function<void(const SlicingStatus&)>  status_callback_type;
     // Default status console print out in the form of percent => message.
@@ -429,10 +462,7 @@ public:
     // Register a custom status callback.
     void                    set_status_callback(status_callback_type cb) { m_status_callback = cb; }
     // Calls a registered callback to update the status, or print out the default message.
-    void                    set_status(int percent, const std::string &message, unsigned int flags = SlicingStatus::DEFAULT) {
-		if (m_status_callback) m_status_callback(SlicingStatus(percent, message, flags));
-        else printf("%d => %s\n", percent, message.c_str());
-    }
+    void                    set_status(int percent, const std::string &message, unsigned int flags = SlicingStatus::DEFAULT, int warning_step = -1) const;
 
     typedef std::function<void()>  cancel_callback_type;
     // Various methods will call this callback to stop the background processing (the Print::process() call)
@@ -467,6 +497,10 @@ public:
     // If filename_set is empty, than the path may be a file or directory. If it is a file, then the macro will not be processed.
     std::string                output_filepath(const std::string &path, const std::string &filename_base = std::string()) const;
 
+    //BBS: get/set plate id
+    int get_plate_index() const { return m_plate_index; }
+    void set_plate_index(int index) { m_plate_index = index; }
+
 protected:
 	friend class PrintObjectBase;
     friend class BackgroundSlicingProcess;
@@ -477,7 +511,11 @@ protected:
 	// Notify UI about a new warning of a milestone "step" on this PrintBase.
 	// The UI will be notified by calling a status callback.
 	// If no status callback is registered, the message is printed to console.
-    void 				   status_update_warnings(int step, PrintStateBase::WarningLevel warning_level, const std::string &message, const PrintObjectBase* print_object = nullptr);
+    void 				   status_update_warnings(int step, PrintStateBase::WarningLevel warning_level,
+        const std::string &message, const PrintObjectBase* print_object = nullptr, PrintStateBase::SlicingNotificationType message_id = PrintStateBase::SlicingDefaultNotification);
+    //BBS: add api to update printobject's warnings
+	void                   status_update_warnings(int step, PrintStateBase::WarningLevel /* warning_level */,
+	    const std::string& message, PrintObjectBase &object, PrintStateBase::SlicingNotificationType message_id = PrintStateBase::SlicingDefaultNotification);
 
     // If the background processing stop was requested, throw CanceledException.
     // To be called by the worker thread and its sub-threads (mostly launched on the TBB thread pool) regularly.
@@ -493,6 +531,9 @@ protected:
 	Model                                   m_model;
 	DynamicPrintConfig						m_full_print_config;
     PlaceholderParser                       m_placeholder_parser;
+
+    //BBS: add plate id into print base
+    int m_plate_index{ 0 };
 
     // Callback to be evoked regularly to update state of the UI thread.
     status_callback_type                    m_status_callback;
@@ -521,7 +562,7 @@ public:
 
 protected:
     bool            set_started(PrintStepEnum step) { return m_state.set_started(step, this->state_mutex(), [this](){ this->throw_if_canceled(); }); }
-	PrintStateBase::TimeStamp set_done(PrintStepEnum step) { 
+	PrintStateBase::TimeStamp set_done(PrintStepEnum step) {
 		std::pair<PrintStateBase::TimeStamp, bool> status = m_state.set_done(step, this->state_mutex(), [this](){ this->throw_if_canceled(); });
         if (status.second)
             this->status_update_warnings(static_cast<int>(step), PrintStateBase::WarningLevel::NON_CRITICAL, std::string());
@@ -530,11 +571,11 @@ protected:
     bool            invalidate_step(PrintStepEnum step)
 		{ return m_state.invalidate(step, this->cancel_callback()); }
     template<typename StepTypeIterator>
-    bool            invalidate_steps(StepTypeIterator step_begin, StepTypeIterator step_end) 
+    bool            invalidate_steps(StepTypeIterator step_begin, StepTypeIterator step_end)
         { return m_state.invalidate_multiple(step_begin, step_end, this->cancel_callback()); }
-    bool            invalidate_steps(std::initializer_list<PrintStepEnum> il) 
+    bool            invalidate_steps(std::initializer_list<PrintStepEnum> il)
         { return m_state.invalidate_multiple(il.begin(), il.end(), this->cancel_callback()); }
-    bool            invalidate_all_steps() 
+    bool            invalidate_all_steps()
         { return m_state.invalidate_all(this->cancel_callback()); }
 
 	bool            is_step_started_unguarded(PrintStepEnum step) const { return m_state.is_started_unguarded(step); }
@@ -542,11 +583,13 @@ protected:
 
     // Add a slicing warning to the active Print step and send a status notification.
     // This method could be called multiple times between this->set_started() and this->set_done().
-    void            active_step_add_warning(PrintStateBase::WarningLevel warning_level, const std::string &message, int message_id = 0) {
-    	std::pair<PrintStepEnum, bool> active_step = m_state.active_step_add_warning(warning_level, message, message_id, this->state_mutex());
-    	if (active_step.second)
-    		// Update UI.
-            this->status_update_warnings(static_cast<int>(active_step.first), warning_level, message);
+    void            active_step_add_warning(PrintStateBase::WarningLevel warning_level, const std::string &message,
+                            PrintStateBase::SlicingNotificationType message_id = PrintStateBase::SlicingDefaultNotification)
+    {
+        std::pair<PrintStepEnum, bool> active_step = m_state.active_step_add_warning(warning_level, message, (int)message_id, this->state_mutex());
+        if (active_step.second)
+            // Update UI.
+            this->status_update_warnings(static_cast<int>(active_step.first), warning_level, message, nullptr, message_id);
     }
 
 private:
@@ -568,9 +611,9 @@ public:
 protected:
 	PrintObjectBaseWithState(PrintType *print, ModelObject *model_object) : PrintObjectBase(model_object), m_print(print) {}
 
-    bool            set_started(PrintObjectStepEnum step) 
+    bool            set_started(PrintObjectStepEnum step)
         { return m_state.set_started(step, PrintObjectBase::state_mutex(m_print), [this](){ this->throw_if_canceled(); }); }
-	PrintStateBase::TimeStamp set_done(PrintObjectStepEnum step) { 
+	PrintStateBase::TimeStamp set_done(PrintObjectStepEnum step) {
 		std::pair<PrintStateBase::TimeStamp, bool> status = m_state.set_done(step, PrintObjectBase::state_mutex(m_print), [this](){ this->throw_if_canceled(); });
         if (status.second)
             this->status_update_warnings(m_print, static_cast<int>(step), PrintStateBase::WarningLevel::NON_CRITICAL, std::string());
@@ -580,11 +623,11 @@ protected:
     bool            invalidate_step(PrintObjectStepEnum step)
         { return m_state.invalidate(step, PrintObjectBase::cancel_callback(m_print)); }
     template<typename StepTypeIterator>
-    bool            invalidate_steps(StepTypeIterator step_begin, StepTypeIterator step_end) 
+    bool            invalidate_steps(StepTypeIterator step_begin, StepTypeIterator step_end)
         { return m_state.invalidate_multiple(step_begin, step_end, PrintObjectBase::cancel_callback(m_print)); }
-    bool            invalidate_steps(std::initializer_list<PrintObjectStepEnum> il) 
+    bool            invalidate_steps(std::initializer_list<PrintObjectStepEnum> il)
         { return m_state.invalidate_multiple(il.begin(), il.end(), PrintObjectBase::cancel_callback(m_print)); }
-    bool            invalidate_all_steps() 
+    bool            invalidate_all_steps()
         { return m_state.invalidate_all(PrintObjectBase::cancel_callback(m_print)); }
 
     bool            is_step_started_unguarded(PrintObjectStepEnum step) const { return m_state.is_started_unguarded(step); }
@@ -592,10 +635,11 @@ protected:
 
     // Add a slicing warning to the active PrintObject step and send a status notification.
     // This method could be called multiple times between this->set_started() and this->set_done().
-    void            active_step_add_warning(PrintStateBase::WarningLevel warning_level, const std::string &message, int message_id = 0) {
-    	std::pair<PrintObjectStepEnum, bool> active_step = m_state.active_step_add_warning(warning_level, message, message_id, PrintObjectBase::state_mutex(m_print));
+    void            active_step_add_warning(PrintStateBase::WarningLevel warning_level, const std::string &message,
+                        PrintStateBase::SlicingNotificationType message_id = PrintStateBase::SlicingDefaultNotification) {
+    	std::pair<PrintObjectStepEnum, bool> active_step = m_state.active_step_add_warning(warning_level, message,(int) message_id, PrintObjectBase::state_mutex(m_print));
     	if (active_step.second)
-    		this->status_update_warnings(m_print, static_cast<int>(active_step.first), warning_level, message);
+    		this->status_update_warnings(m_print, static_cast<int>(active_step.first), warning_level, message, message_id);
     }
 
 protected:

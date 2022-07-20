@@ -17,9 +17,11 @@
 #include "GCode/GCodeProcessor.hpp"
 #include "EdgeGrid.hpp"
 #include "GCode/ThumbnailData.hpp"
+#include "libslic3r/ObjectID.hpp"
 
 #include <memory>
 #include <map>
+#include <set>
 #include <string>
 
 #ifdef HAS_PRESSURE_EQUALIZER
@@ -56,26 +58,31 @@ public:
     Wipe() : enable(false) {}
     bool has_path() const { return !this->path.points.empty(); }
     void reset_path() { this->path = Polyline(); }
-    std::string wipe(GCode &gcodegen, bool toolchange = false);
+    std::string wipe(GCode &gcodegen, bool toolchange = false, bool is_last = false);
 };
 
 class WipeTowerIntegration {
 public:
     WipeTowerIntegration(
         const PrintConfig                                           &print_config,
+        // BBS: add partplate logic
+        const int                                                    plate_idx,
+        const Vec3d                                                  plate_origin,
         const std::vector<WipeTower::ToolChangeResult>              &priming,
         const std::vector<std::vector<WipeTower::ToolChangeResult>> &tool_changes,
         const WipeTower::ToolChangeResult                           &final_purge) :
         m_left(/*float(print_config.wipe_tower_x.value)*/ 0.f),
-        m_right(float(/*print_config.wipe_tower_x.value +*/ print_config.wipe_tower_width.value)),
-        m_wipe_tower_pos(float(print_config.wipe_tower_x.value), float(print_config.wipe_tower_y.value)),
+        m_right(float(/*print_config.wipe_tower_x.value +*/ print_config.prime_tower_width.value)),
+        m_wipe_tower_pos(float(print_config.wipe_tower_x.get_at(plate_idx)), float(print_config.wipe_tower_y.get_at(plate_idx))),
         m_wipe_tower_rotation(float(print_config.wipe_tower_rotation_angle)),
         m_extruder_offsets(print_config.extruder_offset.values),
         m_priming(priming),
         m_tool_changes(tool_changes),
         m_final_purge(final_purge),
         m_layer_idx(-1),
-        m_tool_change_idx(0)
+        m_tool_change_idx(0),
+        m_plate_origin(plate_origin),
+        m_single_extruder_multi_material(print_config.single_extruder_multi_material)
     {}
 
     std::string prime(GCode &gcodegen);
@@ -106,6 +113,10 @@ private:
     int                                                          m_layer_idx;
     int                                                          m_tool_change_idx;
     double                                                       m_last_wipe_tower_print_z = 0.f;
+
+    // BBS
+    Vec3d                                                        m_plate_origin;
+    bool                                                         m_single_extruder_multi_material;
 };
 
 class ColorPrintColors
@@ -117,7 +128,7 @@ public:
 
 class GCode {
 public:        
-    GCode() : 
+    GCode() :
     	m_origin(Vec2d::Zero()),
         m_enable_loop_clipping(true), 
         m_enable_cooling_markers(false), 
@@ -127,7 +138,7 @@ public:
         m_layer_index(-1), 
         m_layer(nullptr),
         m_object_layer_over_raft(false),
-        m_volumetric_speed(0),
+        //m_volumetric_speed(0),
         m_last_pos_defined(false),
         m_last_extrusion_role(erNone),
         m_last_width(0.0f),
@@ -137,13 +148,19 @@ public:
         m_brim_done(false),
         m_second_layer_things_done(false),
         m_silent_time_estimator_enabled(false),
-        m_last_obj_copy(nullptr, Point(std::numeric_limits<coord_t>::max(), std::numeric_limits<coord_t>::max()))
+        m_last_obj_copy(nullptr, Point(std::numeric_limits<coord_t>::max(), std::numeric_limits<coord_t>::max())),
+        // BBS
+        m_toolchange_count(0),
+        m_nominal_z(0.)
         {}
     ~GCode() = default;
 
     // throws std::runtime_exception on error,
     // throws CanceledException through print->throw_if_canceled().
     void            do_export(Print* print, const char* path, GCodeProcessorResult* result = nullptr, ThumbnailsGeneratorCallback thumbnail_cb = nullptr);
+
+    //BBS: set offset for gcode writer
+    void set_gcode_offset(double x, double y) { m_writer.set_xy_offset(x, y); m_processor.set_xy_offset(x, y);}
 
     // Exported for the helper classes (OozePrevention, Wipe) and for the Perl binding for unit tests.
     const Vec2d&    origin() const { return m_origin; }
@@ -175,12 +192,44 @@ public:
     // public, so that it could be accessed by free helper functions from GCode.cpp
     struct LayerToPrint
     {
-        LayerToPrint() : object_layer(nullptr), support_layer(nullptr) {}
+        LayerToPrint() : object_layer(nullptr), support_layer(nullptr), tree_support_layer(nullptr) {}
         const Layer* 		object_layer;
         const SupportLayer* support_layer;
-        const Layer* 		layer()   const { return (object_layer != nullptr) ? object_layer : support_layer; }
+        const TreeSupportLayer* tree_support_layer;
+        const Layer* 		layer()   const
+        {
+            if (object_layer != nullptr)
+                return object_layer;
+
+            if (support_layer != nullptr)
+                return support_layer;
+
+            if (tree_support_layer != nullptr)
+                return tree_support_layer;
+
+            return nullptr;
+        }
         const PrintObject* 	object()  const { return (this->layer() != nullptr) ? this->layer()->object() : nullptr; }
-        coordf_t            print_z() const { return (object_layer != nullptr && support_layer != nullptr) ? 0.5 * (object_layer->print_z + support_layer->print_z) : this->layer()->print_z; }
+        coordf_t            print_z() const
+        {
+            coordf_t sum_z = 0.;
+            size_t count = 0;
+            if (object_layer != nullptr) {
+                sum_z += object_layer->print_z;
+                count++;
+            }
+
+            if (support_layer != nullptr) {
+                sum_z += support_layer->print_z;
+                count++;
+            }
+
+            if (tree_support_layer != nullptr) {
+                sum_z += tree_support_layer->print_z;
+                count++;
+            }
+            return sum_z / count;
+        }
     };
 
 private:
@@ -234,7 +283,9 @@ private:
 		const std::vector<const PrintInstance*> *ordering,
         // If set to size_t(-1), then print all copies of all objects.
         // Otherwise print a single copy of a single object.
-        const size_t                     single_object_idx = size_t(-1));
+        const size_t                     single_object_idx = size_t(-1),
+        // BBS
+        const bool                       prime_extruder = false);
     // Process all layers of all objects (non-sequential mode) with a parallel pipeline:
     // Generate G-code, run the filters (vase mode, cooling buffer), run the G-code analyser
     // and export G-code into file.
@@ -252,13 +303,19 @@ private:
         const ToolOrdering                      &tool_ordering,
         std::vector<LayerToPrint>                layers_to_print,
         const size_t                             single_object_idx,
-        GCodeOutputStream                       &output_stream);
+        GCodeOutputStream                       &output_stream,
+        // BBS
+        const bool                               prime_extruder = false);
+
+    //BBS
+    void check_placeholder_parser_failed();
 
     void            set_last_pos(const Point &pos) { m_last_pos = pos; m_last_pos_defined = true; }
     bool            last_pos_defined() const { return m_last_pos_defined; }
     void            set_extruders(const std::vector<unsigned int> &extruder_ids);
     std::string     preamble();
-    std::string     change_layer(coordf_t print_z);
+    // BBS
+    std::string     change_layer(coordf_t print_z, bool lazy_raise = false);
     std::string     extrude_entity(const ExtrusionEntity &entity, std::string description = "", double speed = -1., std::unique_ptr<EdgeGrid::Grid> *lower_layer_edge_grid = nullptr);
     std::string     extrude_loop(ExtrusionLoop loop, std::string description, double speed = -1., std::unique_ptr<EdgeGrid::Grid> *lower_layer_edge_grid = nullptr);
     std::string     extrude_multi_path(ExtrusionMultiPath multipath, std::string description = "", double speed = -1.);
@@ -271,7 +328,7 @@ private:
     {
         ObjectByExtruder() : support(nullptr), support_extrusion_role(erNone) {}
         const ExtrusionEntityCollection  *support;
-        // erSupportMaterial / erSupportMaterialInterface or erMixed.
+        // erSupportMaterial / erSupportMaterialInterface / erSupportTransition or erMixed.
         ExtrusionRole                     support_extrusion_role;
 
         struct Island
@@ -333,10 +390,11 @@ private:
 
     std::string     travel_to(const Point &point, ExtrusionRole role, std::string comment);
     bool            needs_retraction(const Polyline &travel, ExtrusionRole role = erNone);
-    std::string     retract(bool toolchange = false);
+    std::string     retract(bool toolchange = false, bool is_last_retraction = false);
     std::string     unretract() { return m_writer.unlift() + m_writer.unretract(); }
     std::string     set_extruder(unsigned int extruder_id, double print_z);
-
+    std::set<ObjectID>              m_objsWithBrim; // indicates the objs with brim
+    std::set<ObjectID>              m_objSupportsWithBrim; // indicates the objs' supports with brim
     // Cache for custom seam enforcers/blockers for each layer.
     SeamPlacer                          m_seam_placer;
 
@@ -358,7 +416,7 @@ private:
     AvoidCrossingPerimeters             m_avoid_crossing_perimeters;
     bool                                m_enable_loop_clipping;
     // If enabled, the G-code generator will put following comments at the ends
-    // of the G-code lines: _EXTRUDE_SET_SPEED, _WIPE, _BRIDGE_FAN_START, _BRIDGE_FAN_END
+    // of the G-code lines: _EXTRUDE_SET_SPEED, _WIPE, _OVERHANG_FAN_START, _OVERHANG_FAN_END
     // Those comments are received and consumed (removed from the G-code) by the CoolingBuffer.pm Perl module.
     bool                                m_enable_cooling_markers;
     // Markers for the Pressure Equalizer to recognize the extrusion type.
@@ -376,7 +434,7 @@ private:
     const Layer*                        m_layer;
     // m_layer is an object layer and it is being printed over raft surface.
     bool                                m_object_layer_over_raft;
-    double                              m_volumetric_speed;
+    //double                              m_volumetric_speed;
     // Support for the extrusion role markers. Which marker is active?
     ExtrusionRole                       m_last_extrusion_role;
     // Support for G-Code Processor
@@ -412,12 +470,23 @@ private:
     // Processor
     GCodeProcessor m_processor;
 
+    // BBS
+    unsigned int m_toolchange_count;
+    coordf_t m_nominal_z;
+    bool m_need_change_layer_lift_z = false;
+
+    static bool gcode_label_objects;
+
+    // BBS
+    void get_bed_temperature(const int extruder_id, const bool is_first_layer, std::vector<int>& temps_per_bed, int& default_temp) const;
+
     std::string _extrude(const ExtrusionPath &path, std::string description = "", double speed = -1);
     void print_machine_envelope(GCodeOutputStream &file, Print &print);
     void _print_first_layer_bed_temperature(GCodeOutputStream &file, Print &print, const std::string &gcode, unsigned int first_printing_extruder_id, bool wait);
     void _print_first_layer_extruder_temperatures(GCodeOutputStream &file, Print &print, const std::string &gcode, unsigned int first_printing_extruder_id, bool wait);
     // On the first printing layer. This flag triggers first layer speeds.
-    bool                                on_first_layer() const { return m_layer != nullptr && m_layer->id() == 0; }
+    //BBS
+    bool                                on_first_layer() const { return m_layer != nullptr && m_layer->id() == 0 && abs(m_layer->bottom_z()) < EPSILON; }
     // To control print speed of 1st object layer over raft interface.
     bool                                object_layer_over_raft() const { return m_object_layer_over_raft; }
 
@@ -435,9 +504,10 @@ private:
 
     friend class Wipe;
     friend class WipeTowerIntegration;
+    friend class Print;
 };
 
-std::vector<const PrintInstance*> sort_object_instances_by_model_order(const Print& print);
+std::vector<const PrintInstance*> sort_object_instances_by_model_order(const Print& print, bool init_order = false);
 
 }
 

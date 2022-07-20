@@ -9,6 +9,7 @@
 #include <wx/string.h>
 
 #include "libslic3r/Point.hpp"
+#include "libslic3r/GCode/ThumbnailData.hpp"
 
 namespace Slic3r {namespace Search {
 struct OptionViewParameters;
@@ -17,10 +18,19 @@ struct OptionViewParameters;
 class wxString;
 class wxMouseEvent;
 class wxKeyEvent;
+struct ImRect;
 
 
 namespace Slic3r {
 namespace GUI {
+
+
+bool get_data_from_svg(const std::string &filename, unsigned int max_size_px, ThumbnailData &thumbnail_data);
+
+bool slider_behavior(ImGuiID id, const ImRect& region, const ImS32 v_min, const ImS32 v_max, ImS32* out_value, ImRect* out_handle, ImGuiSliderFlags flags = 0, const int fixed_value = -1, const ImVec4& fixed_rect = ImVec4());
+bool button_with_pos(const char* label, const ImVec2& size, const ImVec2& pos, ImGuiButtonFlags flags = 0);
+bool menu_item_with_icon(const char* label, const char* shortcut, ImU32 icon_color, bool selected, bool enabled = true);
+
 
 class ImGuiWrapper
 {
@@ -76,6 +86,11 @@ public:
     void set_next_window_bg_alpha(float alpha);
 	void set_next_window_size(float x, float y, ImGuiCond cond);
 
+    /* BBL style widgets */
+    bool bbl_input_double(const wxString &label, const double &value, const std::string &format = "%0.2f");
+    bool bbl_slider_float(const std::string &label, float* v, float v_min, float v_max, const char* format = "%.3f", float power = 1.0f, bool clamp = true, const wxString& tooltip = {});
+    bool bbl_slider_float_style(const std::string &label, float* v, float v_min, float v_max, const char* format = "%.3f", float power = 1.0f, bool clamp = true, const wxString& tooltip = {});
+
     bool begin(const std::string &name, int flags = 0);
     bool begin(const wxString &name, int flags = 0);
     bool begin(const std::string& name, bool* close, int flags = 0);
@@ -83,6 +98,7 @@ public:
     void end();
 
     bool button(const wxString &label);
+    bool bbl_button(const wxString &label);
 	bool button(const wxString& label, float width, float height);
     bool radio_button(const wxString &label, bool active);
 	bool image_button();
@@ -90,6 +106,9 @@ public:
     bool input_double(const wxString &label, const double &value, const std::string &format = "%.3f");
     bool input_vec3(const std::string &label, const Vec3d &value, float width, const std::string &format = "%.3f");
     bool checkbox(const wxString &label, bool &value);
+    bool bbl_checkbox(const wxString &label, bool &value);
+    bool bbl_radio_button(const char *label, bool active);
+    bool bbl_sliderin(const char *label, int *v, int v_min, int v_max, const char *format = "%d", ImGuiSliderFlags flags = 0);
     void text(const char *label);
     void text(const std::string &label);
     void text(const wxString &label);
@@ -101,6 +120,7 @@ public:
     void text_wrapped(const wxString &label, float wrap_width);
     void tooltip(const char *label, float wrap_width);
     void tooltip(const wxString &label, float wrap_width);
+
 
     // Float sliders: Manually inserted values aren't clamped by ImGui.Using this wrapper function does (when clamp==true).
 #if ENABLE_ENHANCED_IMGUI_SLIDER_FLOAT
@@ -143,6 +163,24 @@ public:
     static const ImVec4 COL_BUTTON_HOVERED;
     static const ImVec4 COL_BUTTON_ACTIVE;
 
+    //BBS add more colors
+    static const ImVec4 COL_BLUE_LIGHT;
+    static const ImVec4 COL_GREEN_LIGHT;
+    static const ImVec4 COL_HOVER;
+    static const ImVec4 COL_ACTIVE;
+    static const ImVec4 COL_TITLE_BG;
+    static const ImVec4 COL_WINDOW_BG;
+    static const ImVec4 COL_SEPARATOR;
+
+    //BBS
+    static void push_toolbar_style();
+    static void pop_toolbar_style();
+    static void push_menu_style();
+    static void pop_menu_style();
+
+    //BBS
+    static int TOOLBAR_WINDOW_FLAGS;
+
 private:
     void init_font(bool compress);
     void init_input();
@@ -156,6 +194,14 @@ private:
     static void clipboard_set(void* user_data, const char* text);
 
     LastSliderStatus m_last_slider_status;
+};
+
+class IMTexture
+{
+public:
+    // load svg file to thumbnail data, specific width, height is thumbnailData width, height
+    static bool load_from_svg_file(const std::string& filename, unsigned width, unsigned height, ImTextureID &texture_id);
+
 };
 
 

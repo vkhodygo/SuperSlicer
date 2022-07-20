@@ -605,7 +605,7 @@ struct MMU_Graph
             if (arcs[arc_idx].to_idx == to_idx)
                 return;
         for (const size_t &arc_idx : this->nodes[to_idx].arc_idxs)
-            if (arcs[arc_idx].to_idx == to_idx)
+            if (arcs[arc_idx].to_idx == from_idx)
                 return;
 
         this->nodes[from_idx].arc_idxs.push_back(this->arcs.size());
@@ -982,6 +982,44 @@ static MMU_Graph build_graph(size_t layer_idx, const std::vector<std::vector<Col
             const ColoredLine colored_line      = lines_colored[edge_it->cell()->source_index()];
             const ColoredLine contour_line_prev = get_prev_contour_line(edge_it);
             const ColoredLine contour_line_next = get_next_contour_line(edge_it);
+            bool has_color_change = false;
+            {
+                const double tolerance = 15 * SCALED_EPSILON;
+                double acc_len = 0.0;
+                size_t contour_line_local_idx = lines_colored[edge_it->cell()->source_index()].local_line_idx;
+                size_t poly_idx = lines_colored[edge_it->cell()->source_index()].poly_idx;
+                size_t contour_line_size = color_poly[poly_idx].size();
+                size_t contour_prev_local_idx = (contour_line_local_idx > 0) ? contour_line_local_idx - 1 : contour_line_size - 1;
+                while (!has_color_change) {
+                    ColoredLine& prev_line = lines_colored[graph.get_global_index(poly_idx, contour_prev_local_idx)];
+                    if (!has_same_color(prev_line, colored_line)) {
+                        has_color_change = true;
+                        break;
+                    }
+
+                    acc_len += prev_line.line.length();
+                    if (acc_len >= tolerance)
+                        break;
+
+                    contour_prev_local_idx = (contour_prev_local_idx > 0) ? contour_prev_local_idx - 1 : contour_line_size - 1;
+                }
+
+                acc_len = 0.0;
+                size_t contour_next_local_idx = (contour_line_local_idx + 1) % contour_line_size;
+                while (!has_color_change) {
+                    ColoredLine& next_line = lines_colored[graph.get_global_index(poly_idx, contour_next_local_idx)];
+                    if (!has_same_color(colored_line, next_line)) {
+                        has_color_change = true;
+                        break;
+                    }
+
+                    acc_len += next_line.line.length();
+                    if (acc_len >= tolerance)
+                        break;
+
+                    contour_next_local_idx = (contour_next_local_idx + 1) % contour_line_size;
+                }
+            }
 
             if (edge_it->vertex0()->color() >= graph.nodes_count() || edge_it->vertex1()->color() >= graph.nodes_count()) {
                 enum class Vertex { VERTEX0, VERTEX1 };
@@ -1016,12 +1054,12 @@ static MMU_Graph build_graph(size_t layer_idx, const std::vector<std::vector<Col
                 const size_t to_idx   = edge_it->vertex1()->color();
                 if (graph.is_vertex_on_contour(edge_it->vertex0())) {
                     if (is_point_closer_to_beginning_of_line(contour_line, edge_line.a)) {
-                        if ((!has_same_color(contour_line_prev, colored_line) || force_edge_adding[colored_line.poly_idx]) && points_inside(contour_line_prev.line, contour_line, edge_line.b)) {
+                        if ((has_color_change || force_edge_adding[colored_line.poly_idx]) && points_inside(contour_line_prev.line, contour_line, edge_line.b)) {
                             graph.append_edge(from_idx, to_idx);
                             force_edge_adding[colored_line.poly_idx] = false;
                         }
                     } else {
-                        if ((!has_same_color(contour_line_next, colored_line) || force_edge_adding[colored_line.poly_idx]) && points_inside(contour_line, contour_line_next.line, edge_line.b)) {
+                        if ((has_color_change || force_edge_adding[colored_line.poly_idx]) && points_inside(contour_line, contour_line_next.line, edge_line.b)) {
                             graph.append_edge(from_idx, to_idx);
                             force_edge_adding[colored_line.poly_idx] = false;
                         }
@@ -1029,12 +1067,12 @@ static MMU_Graph build_graph(size_t layer_idx, const std::vector<std::vector<Col
                 } else {
                     assert(graph.is_vertex_on_contour(edge_it->vertex1()));
                     if (is_point_closer_to_beginning_of_line(contour_line, edge_line.b)) {
-                        if ((!has_same_color(contour_line_prev, colored_line) || force_edge_adding[colored_line.poly_idx]) && points_inside(contour_line_prev.line, contour_line, edge_line.a)) {
+                        if ((has_color_change || force_edge_adding[colored_line.poly_idx]) && points_inside(contour_line_prev.line, contour_line, edge_line.a)) {
                             graph.append_edge(from_idx, to_idx);
                             force_edge_adding[colored_line.poly_idx] = false;
                         }
                     } else {
-                        if ((!has_same_color(contour_line_next, colored_line) || force_edge_adding[colored_line.poly_idx]) && points_inside(contour_line, contour_line_next.line, edge_line.a)) {
+                        if ((has_color_change || force_edge_adding[colored_line.poly_idx]) && points_inside(contour_line, contour_line_next.line, edge_line.a)) {
                             graph.append_edge(from_idx, to_idx);
                             force_edge_adding[colored_line.poly_idx] = false;
                         }
@@ -1048,30 +1086,22 @@ static MMU_Graph build_graph(size_t layer_idx, const std::vector<std::vector<Col
                 Point real_v1        = Point(coord_t(real_v1_double.x()), coord_t(real_v1_double.y()));
 
                 if (is_point_closer_to_beginning_of_line(contour_line, intersection)) {
-                    Line first_part(intersection, real_v0);
-                    Line second_part(intersection, real_v1);
-
-                    if (!has_same_color(contour_line_prev, colored_line)) {
-                        if (points_inside(contour_line_prev.line, contour_line, first_part.b))
+                    if (has_color_change)
+                    {
+                        if (points_inside(contour_line_prev.line, contour_line, real_v0))
                             graph.append_edge(edge_it->vertex0()->color(), graph.get_border_arc(edge_it->cell()->source_index()).from_idx);
 
-                        if (points_inside(contour_line_prev.line, contour_line, second_part.b))
+                        if (points_inside(contour_line_prev.line, contour_line, real_v1))
                             graph.append_edge(edge_it->vertex1()->color(), graph.get_border_arc(edge_it->cell()->source_index()).from_idx);
                     }
                 } else {
-                    const size_t int_point_idx    = graph.get_border_arc(edge_it->cell()->source_index()).to_idx;
-                    const Vec2d  int_point_double = graph.nodes[int_point_idx].point;
-                    const Point  int_point        = Point(coord_t(int_point_double.x()), coord_t(int_point_double.y()));
+                    if (has_color_change)
+                    {
+                        if (points_inside(contour_line, contour_line_next.line, real_v0))
+                            graph.append_edge(edge_it->vertex0()->color(), graph.get_border_arc(edge_it->cell()->source_index()).to_idx);
 
-                    const Line first_part(int_point, real_v0);
-                    const Line second_part(int_point, real_v1);
-
-                    if (!has_same_color(contour_line_next, colored_line)) {
-                        if (points_inside(contour_line, contour_line_next.line, first_part.b))
-                            graph.append_edge(edge_it->vertex0()->color(), int_point_idx);
-
-                        if (points_inside(contour_line, contour_line_next.line, second_part.b))
-                            graph.append_edge(edge_it->vertex1()->color(), int_point_idx);
+                        if (points_inside(contour_line, contour_line_next.line, real_v1))
+                            graph.append_edge(edge_it->vertex1()->color(), graph.get_border_arc(edge_it->cell()->source_index()).to_idx);
                     }
                 }
             }
@@ -1201,7 +1231,7 @@ static inline double compute_edge_length(const MMU_Graph &graph, const size_t st
     used_arcs[start_arc_idx]                = true;
     const MMU_Graph::Arc *arc               = &graph.arcs[start_arc_idx];
     size_t                idx               = start_idx;
-    double                line_total_length = (graph.nodes[arc->to_idx].point - graph.nodes[idx].point).norm();;
+    double                line_total_length = (graph.nodes[arc->to_idx].point - graph.nodes[idx].point).norm();
     while (graph.nodes[arc->to_idx].arc_idxs.size() == 2) {
         bool found = false;
         for (const size_t &arc_idx : graph.nodes[arc->to_idx].arc_idxs) {
@@ -1303,7 +1333,8 @@ static inline std::vector<std::vector<ExPolygons>> mmu_segmentation_top_and_bott
                                                                                           const std::vector<ExPolygons> &input_expolygons,
                                                                                           const std::function<void()>   &throw_on_cancel_callback)
 {
-    const size_t num_extruders = print_object.print()->config().nozzle_diameter.size() + 1;
+    // BBS
+    const size_t num_extruders = print_object.print()->config().filament_colour.size() + 1;
     const size_t num_layers    = input_expolygons.size();
     const ConstLayerPtrsAdaptor layers = print_object.layers();
 
@@ -1313,9 +1344,9 @@ static inline std::vector<std::vector<ExPolygons>> mmu_segmentation_top_and_bott
     int granularity = 1;
     for (size_t i = 0; i < print_object.num_printing_regions(); ++ i) {
         const PrintRegionConfig &config = print_object.printing_region(i).config();
-        max_top_layers    = std::max(max_top_layers, config.top_solid_layers.value);
-        max_bottom_layers = std::max(max_bottom_layers, config.bottom_solid_layers.value);
-        granularity       = std::max(granularity, std::max(config.top_solid_layers.value, config.bottom_solid_layers.value) - 1);
+        max_top_layers    = std::max(max_top_layers, config.top_shell_layers.value);
+        max_bottom_layers = std::max(max_bottom_layers, config.bottom_shell_layers.value);
+        granularity       = std::max(granularity, std::max(config.top_shell_layers.value, config.bottom_shell_layers.value) - 1);
     }
 
     // Project upwards pointing painted triangles over top surfaces,
@@ -1431,9 +1462,11 @@ static inline std::vector<std::vector<ExPolygons>> mmu_segmentation_top_and_bott
         // Minimum radius of a region to be printable. Used to filter regions by morphological opening.
         float   small_region_threshold  { 0.f };
         // Maximum number of top layers for a queried color.
-        int     top_solid_layers        { 0 };
+        int     top_shell_layers        { 0 };
         // Maximum number of bottom layers for a queried color.
-        int     bottom_solid_layers     { 0 };
+        int     bottom_shell_layers     { 0 };
+        //BBS: spacing according to width and layer height
+        float   extrusion_spacing{ 0.f };
     };
     auto layer_color_stat = [&layers = std::as_const(layers)](const size_t layer_idx, const size_t color_idx) -> LayerColorStat {
         LayerColorStat out;
@@ -1442,20 +1475,23 @@ static inline std::vector<std::vector<ExPolygons>> mmu_segmentation_top_and_bott
             if (const PrintRegionConfig &config = region->region().config();
                 // color_idx == 0 means "don't know" extruder aka the underlying extruder.
                 // As this region may split existing regions, we collect statistics over all regions for color_idx == 0.
-                color_idx == 0 || config.perimeter_extruder == int(color_idx)) {
-                out.extrusion_width     = std::max<float>(out.extrusion_width, float(config.perimeter_extrusion_width));
-                out.top_solid_layers    = std::max<int>(out.top_solid_layers, config.top_solid_layers);
-                out.bottom_solid_layers = std::max<int>(out.bottom_solid_layers, config.bottom_solid_layers);
-                out.small_region_threshold = config.gap_fill_enabled.value && config.gap_fill_speed.value > 0 ?
+                color_idx == 0 || config.wall_filament == int(color_idx)) {
+                //BBS: the extrusion line width is outer wall rather than inner wall
+                out.extrusion_width     = std::max<float>(out.extrusion_width, float(config.outer_wall_line_width));
+                out.top_shell_layers    = std::max<int>(out.top_shell_layers, config.top_shell_layers);
+                out.bottom_shell_layers = std::max<int>(out.bottom_shell_layers, config.bottom_shell_layers);
+                out.small_region_threshold = config.gap_infill_speed.value > 0 ?
                                              // Gap fill enabled. Enable a single line of 1/2 extrusion width.
-                                             0.5f * float(config.perimeter_extrusion_width) :
+                                             0.5f * float(config.outer_wall_line_width) :
                                              // Gap fill disabled. Enable two lines slightly overlapping.
-                                             float(config.perimeter_extrusion_width) + 0.7f * Flow::rounded_rectangle_extrusion_spacing(float(config.perimeter_extrusion_width), float(layer.height));
+                                             float(config.outer_wall_line_width) + 0.7f * Flow::rounded_rectangle_extrusion_spacing(float(config.outer_wall_line_width), float(layer.height));
                 out.small_region_threshold = scaled<float>(out.small_region_threshold * 0.5f);
+                out.extrusion_spacing = Flow::rounded_rectangle_extrusion_spacing(float(config.outer_wall_line_width), float(layer.height));
                 ++ out.num_regions;
             }
         assert(out.num_regions > 0);
         out.extrusion_width = scaled<float>(out.extrusion_width);
+        out.extrusion_spacing = scaled<float>(out.extrusion_spacing);
         return out;
     };
 
@@ -1473,10 +1509,13 @@ static inline std::vector<std::vector<ExPolygons>> mmu_segmentation_top_and_bott
                         top_ex = opening_ex(top_ex, stat.small_region_threshold);
                         if (! top_ex.empty()) {
                             append(triangles_by_color_top[color_idx][layer_idx + layer_idx_offset], top_ex);
+                            // BBS: propagate only 1 layer below
                             float offset = 0.f;
                             ExPolygons layer_slices_trimmed = input_expolygons[layer_idx];
-                            for (int last_idx = int(layer_idx) - 1; last_idx >= std::max(int(layer_idx - stat.top_solid_layers), int(0)); --last_idx) {
-                                offset -= stat.extrusion_width;
+                            for (int last_idx = int(layer_idx) - 1; last_idx >= std::max(int(layer_idx - 1), int(0)); --last_idx) {
+                                //BBS: offset width should be 2*spacing to avoid too narrow area which has overlap of wall line
+                                //offset -= stat.extrusion_width ;
+                                offset -= (stat.extrusion_spacing + stat.extrusion_width);
                                 layer_slices_trimmed = intersection_ex(layer_slices_trimmed, input_expolygons[last_idx]);
                                 ExPolygons last = opening_ex(intersection_ex(top_ex, offset_ex(layer_slices_trimmed, offset)), stat.small_region_threshold);
                                 if (last.empty())
@@ -1491,10 +1530,13 @@ static inline std::vector<std::vector<ExPolygons>> mmu_segmentation_top_and_bott
                         bottom_ex = opening_ex(bottom_ex, stat.small_region_threshold);
                         if (! bottom_ex.empty()) {
                             append(triangles_by_color_bottom[color_idx][layer_idx + layer_idx_offset], bottom_ex);
+                            // BBS: propogate only 1 layer above
                             float offset = 0.f;
                             ExPolygons layer_slices_trimmed = input_expolygons[layer_idx];
-                            for (size_t last_idx = layer_idx + 1; last_idx < std::min(layer_idx + stat.bottom_solid_layers, num_layers); ++last_idx) {
-                                offset -= stat.extrusion_width;
+                            for (size_t last_idx = layer_idx + 1; last_idx < std::min(layer_idx + 2, num_layers); ++last_idx) {
+                                //BBS: offset width should be 2*spacing to avoid too narrow area which has overlap of wall line
+                                //offset -= stat.extrusion_width;
+                                offset -= (stat.extrusion_spacing + stat.extrusion_width);
                                 layer_slices_trimmed = intersection_ex(layer_slices_trimmed, input_expolygons[last_idx]);
                                 ExPolygons last = opening_ex(intersection_ex(bottom_ex, offset_ex(layer_slices_trimmed, offset)), stat.small_region_threshold);
                                 if (last.empty())
@@ -1678,7 +1720,7 @@ static bool has_layer_only_one_color(const std::vector<std::vector<ColoredLine>>
 
 std::vector<std::vector<ExPolygons>> multi_material_segmentation_by_painting(const PrintObject &print_object, const std::function<void()> &throw_on_cancel_callback)
 {
-    const size_t                          num_extruders = print_object.print()->config().nozzle_diameter.size();
+    const size_t                          num_extruders = print_object.print()->config().filament_colour.size();
     const size_t                          num_layers    = print_object.layers().size();
     std::vector<std::vector<ExPolygons>>  segmented_regions(num_layers);
     segmented_regions.assign(num_layers, std::vector<ExPolygons>(num_extruders + 1));
@@ -1711,7 +1753,7 @@ std::vector<std::vector<ExPolygons>> multi_material_segmentation_by_painting(con
             // Such close points sometimes caused that the Voronoi diagram has self-intersecting edges around these vertices.
             // This consequently leads to issues with the extraction of colored segments by function extract_colored_segments.
             // Calling expolygons_simplify fixed these issues.
-            input_expolygons[layer_idx] = smooth_outward(expolygons_simplify(offset_ex(ex_polygons, -10.f * float(SCALED_EPSILON)), 5 * SCALED_EPSILON), 10 * coord_t(SCALED_EPSILON));
+            input_expolygons[layer_idx] = remove_duplicates(expolygons_simplify(offset_ex(ex_polygons, -10.f * float(SCALED_EPSILON)), 5 * SCALED_EPSILON), scaled<coord_t>(0.01), PI / 6);
 
 #ifdef MMU_SEGMENTATION_DEBUG_INPUT
             {
@@ -1797,19 +1839,28 @@ std::vector<std::vector<ExPolygons>> multi_material_segmentation_by_painting(con
                                 line_end_f = facet[1] + t2 * (facet[2] - facet[1]);
                             }
 
-                            Point line_start(scale_(line_start_f.x()), scale_(line_start_f.y()));
-                            Point line_end(scale_(line_end_f.x()), scale_(line_end_f.y()));
-                            line_start -= print_object.center_offset();
-                            line_end   -= print_object.center_offset();
+                            Line line_to_test(Point(scale_(line_start_f.x()), scale_(line_start_f.y())),
+                                              Point(scale_(line_end_f.x()), scale_(line_end_f.y())));
+                            line_to_test.translate(-print_object.center_offset());
+
+                            // BoundingBoxes for EdgeGrids are computed from printable regions. It is possible that the painted line (line_to_test) could
+                            // be outside EdgeGrid's BoundingBox, for example, when the negative volume is used on the painted area (GH #7618).
+                            // To ensure that the painted line is always inside EdgeGrid's BoundingBox, it is clipped by EdgeGrid's BoundingBox in cases
+                            // when any of the endpoints of the line are outside the EdgeGrid's BoundingBox.
+                            if (const BoundingBox &edge_grid_bbox = edge_grids[layer_idx].bbox(); !edge_grid_bbox.contains(line_to_test.a) || !edge_grid_bbox.contains(line_to_test.b)) {
+                                // If the painted line (line_to_test) is entirely outside EdgeGrid's BoundingBox, skip this painted line.
+                                if (!edge_grid_bbox.overlap(BoundingBox(Points{line_to_test.a, line_to_test.b})) ||
+                                    !line_to_test.clip_with_bbox(edge_grid_bbox))
+                                    continue;
+                            }
 
                             size_t mutex_idx = layer_idx & 0x3F;
                             assert(mutex_idx < painted_lines_mutex.size());
 
                             PaintedLineVisitor visitor(edge_grids[layer_idx], painted_lines[layer_idx], painted_lines_mutex[mutex_idx], 16);
-                            visitor.line_to_test.a = line_start;
-                            visitor.line_to_test.b = line_end;
-                            visitor.color          = int(extruder_idx);
-                            edge_grids[layer_idx].visit_cells_intersecting_line(line_start, line_end, visitor);
+                            visitor.line_to_test = line_to_test;
+                            visitor.color        = int(extruder_idx);
+                            edge_grids[layer_idx].visit_cells_intersecting_line(line_to_test.a, line_to_test.b, visitor);
                         }
                     }
                 }); // end of parallel_for
@@ -1882,10 +1933,10 @@ std::vector<std::vector<ExPolygons>> multi_material_segmentation_by_painting(con
     BOOST_LOG_TRIVIAL(debug) << "MMU segmentation - layers segmentation in parallel - end";
     throw_on_cancel_callback();
 
-    if (auto w = print_object.config().mmu_segmented_region_max_width; w > 0.f) {
-        cut_segmented_layers(input_expolygons, segmented_regions, float(-scale_(w)), throw_on_cancel_callback);
-        throw_on_cancel_callback();
-    }
+    //if (auto w = print_object.config().mmu_segmented_region_max_width; w > 0.f) {
+    //    cut_segmented_layers(input_expolygons, segmented_regions, float(-scale_(w)), throw_on_cancel_callback);
+    //    throw_on_cancel_callback();
+    //}
 
     // The first index is extruder number (includes default extruder), and the second one is layer number
     std::vector<std::vector<ExPolygons>> top_and_bottom_layers = mmu_segmentation_top_and_bottom_layers(print_object, input_expolygons, throw_on_cancel_callback);

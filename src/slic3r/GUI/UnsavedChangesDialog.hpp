@@ -8,6 +8,8 @@
 #include "GUI_Utils.hpp"
 #include "wxExtensions.hpp"
 #include "libslic3r/PresetBundle.hpp"
+#include "Widgets/Button.hpp"
+#include "Widgets/ScrolledWindow.hpp"
 
 class ScalableButton;
 class wxStaticText;
@@ -24,7 +26,7 @@ class PresetComboBox;
 class MainFrame;
 using ModelNodePtrArray = std::vector<std::unique_ptr<ModelNode>>;
 
-// On all of 3 different platforms Bitmap+Text icon column looks different 
+// On all of 3 different platforms Bitmap+Text icon column looks different
 // because of Markup text is missed or not implemented.
 // As a temporary workaround, we will use:
 // MSW - DataViewBitmapText (our custom renderer wxBitmap + wxString, supported Markup text)
@@ -146,7 +148,7 @@ public:
     };
 
     DiffModel(wxWindow* parent);
-    ~DiffModel() {}
+    ~DiffModel(){};
 
     void            SetAssociatedControl(wxDataViewCtrl* ctrl) { m_ctrl = ctrl; }
 
@@ -204,7 +206,7 @@ class DiffViewCtrl : public wxDataViewCtrl
 
 public:
     DiffViewCtrl(wxWindow* parent, wxSize size);
-    ~DiffViewCtrl() {}
+    ~DiffViewCtrl();
 
     DiffModel* model{ nullptr };
 
@@ -230,15 +232,41 @@ public:
 //------------------------------------------
 //          UnsavedChangesDialog
 //------------------------------------------
+#define BOTH_SIDES_BORDER 25
+
+struct PresetItem
+{
+    Preset::Type type;
+    std::string  opt_key;
+    wxString     category_name;
+    wxString     group_name;
+    wxString     option_name;
+    wxString     old_value;
+    wxString     new_value;
+};
+
+
 class UnsavedChangesDialog : public DPIDialog
 {
-    DiffViewCtrl*           m_tree          { nullptr };
-    ScalableButton*         m_save_btn      { nullptr };
-    ScalableButton*         m_transfer_btn  { nullptr };
-    ScalableButton*         m_discard_btn   { nullptr };
+protected:
+    wxPanel *     m_top_line;
+    wxPanel *     m_panel_tab;
+    wxPanel *     m_table_top;
+    wxPanel *     title_block_middle;
+    wxPanel *     title_block_right;
+    wxStaticText *static_temp_title;
+    wxStaticText *static_oldv_title;
+    wxStaticText *static_newv_title;
+    wxBoxSizer *  m_sizer_bottom;
+
+    //DiffViewCtrl*           m_tree          { nullptr };
+    Button*                 m_save_btn      { nullptr };
+    Button*                 m_transfer_btn  { nullptr };
+    Button*                 m_discard_btn   { nullptr };
+    Button*                 m_cancel_btn    { nullptr };
     wxStaticText*           m_action_line   { nullptr };
     wxStaticText*           m_info_line     { nullptr };
-    wxCheckBox*             m_remember_choice   { nullptr };
+    wxScrolledWindow*       m_scrolledWindow{ nullptr };
 
     bool                    m_has_long_strings  { false };
     int                     m_save_btn_id       { wxID_ANY };
@@ -260,8 +288,26 @@ class UnsavedChangesDialog : public DPIDialog
 
     // selected action after Dialog closing
     Action m_exit_action {Action::Undef};
+
+public:
+    //BBS: add project embedded preset relate logic
+    struct PresetData
+    {
+        std::string name;
+        Preset::Type type;
+        bool save_to_project;
+
+        PresetData(std::string preset_name, Preset::Type preset_type, bool save_project)
+            :name(preset_name), type(preset_type), save_to_project(save_project)
+        {
+        }
+    };
+
+private:
+    std::vector<PresetItem> m_presetitems;
     // preset names which are modified in SavePresetDialog and related types
-    std::vector<std::pair<std::string, Preset::Type>>  names_and_types;
+    std::vector<PresetData>  names_and_types;
+    //std::vector<std::pair<std::string, Preset::Type>>  names_and_types;
     // additional action buttons used in dialog
     int m_buttons { ActionButtons::TRANSFER | ActionButtons::SAVE };
 
@@ -275,14 +321,16 @@ public:
     };
 
     // show unsaved changes when preset is switching
-    UnsavedChangesDialog(Preset::Type type, PresetCollection* dependent_presets, const std::string& new_selected_preset);
+    UnsavedChangesDialog(Preset::Type type, PresetCollection* dependent_presets, const std::string& new_selected_preset, bool no_transfer = false);
     // show unsaved changes for all another cases
     UnsavedChangesDialog(const wxString& caption, const wxString& header, const std::string& app_config_key, int act_buttons);
-    ~UnsavedChangesDialog() {}
+    ~UnsavedChangesDialog(){};
 
     void build(Preset::Type type, PresetCollection* dependent_presets, const std::string& new_selected_preset, const wxString& header = "");
     void update(Preset::Type type, PresetCollection* dependent_presets, const std::string& new_selected_preset, const wxString& header);
-    void update_tree(Preset::Type type, PresetCollection *presets);
+    void update_list();
+    std::string subreplace(std::string resource_str, std::string sub_str, std::string new_str);
+    void        update_tree(Preset::Type type, PresetCollection *presets);
     void show_info_line(Action action, std::string preset_name = "");
     void update_config(Action action);
     void close(Action action);
@@ -294,14 +342,37 @@ public:
     bool discard() const            { return m_exit_action == Action::Discard;  }
 
     // get full bundle of preset names and types for saving
-    const std::vector<std::pair<std::string, Preset::Type>>& get_names_and_types() { return names_and_types; }
+    //BBS: add project embedded preset relate logic
+    const std::vector<UnsavedChangesDialog::PresetData>& get_names_and_types() { return names_and_types; }
+    bool get_save_to_project_option() { return names_and_types[0].save_to_project; }
+    //const std::vector<std::pair<std::string, Preset::Type>>& get_names_and_types() { return names_and_types; }
     // short version of the previous function, for the case, when just one preset is modified
-    std::string get_preset_name() { return names_and_types[0].first; }
+    std::string get_preset_name() { return names_and_types[0].name; }
 
-    std::vector<std::string> get_unselected_options(Preset::Type type)  { return m_tree->options(type, false); }
-    std::vector<std::string> get_selected_options  (Preset::Type type)  { return m_tree->options(type, true); }
-    std::vector<std::string> get_selected_options()                     { return m_tree->selected_options(); }
-    bool                     has_unselected_options()                   { return m_tree->has_unselected_options(); }
+    std::vector<std::string> get_unselected_options(Preset::Type type) { /* return m_tree->options(type, false);*/return std::vector<std::string>();}
+    std::vector<std::string> get_selected_options  (Preset::Type type)  {
+        //return m_tree->options(type, true);
+         std::vector<std::string> tmp;
+        for (int i = 0; i < m_presetitems.size(); i++) {
+            if (m_presetitems[i].type == type) {
+                tmp.push_back(m_presetitems[i].opt_key);
+            }
+        }
+
+        return tmp;
+    }
+    std::vector<std::string> get_selected_options()                     {
+        //return m_tree->selected_options();
+
+        std::vector<std::string> tmp;
+        for (int i = 0; i < m_presetitems.size(); i++)
+        {
+           tmp.push_back(m_presetitems[i].opt_key);
+        }
+
+        return tmp;
+    }
+    bool                     has_unselected_options()                   { /*return m_tree->has_unselected_options();*/return false;}
 
 protected:
     void on_dpi_changed(const wxRect& suggested_rect) override;
@@ -317,7 +388,7 @@ class FullCompareDialog : public wxDialog
 public:
     FullCompareDialog(const wxString& option_name, const wxString& old_value, const wxString& new_value,
                       const wxString& old_value_header, const wxString& new_value_header);
-    ~FullCompareDialog() {}
+    ~FullCompareDialog(){};
 };
 
 
@@ -352,7 +423,7 @@ class DiffPresetDialog : public DPIDialog
 
 public:
     DiffPresetDialog(MainFrame* mainframe);
-    ~DiffPresetDialog() {}
+    ~DiffPresetDialog(){};
 
     void                    show(Preset::Type type = Preset::TYPE_INVALID);
     void                    update_presets(Preset::Type type = Preset::TYPE_INVALID);
@@ -362,7 +433,7 @@ protected:
     void on_sys_color_changed() override;
 };
 
-} 
+}
 }
 
 #endif //slic3r_UnsavedChangesDialog_hpp_

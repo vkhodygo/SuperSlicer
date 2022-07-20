@@ -3,7 +3,10 @@
 
 #include "3DScene.hpp"
 #include "libslic3r/GCode/GCodeProcessor.hpp"
+#include "libslic3r/GCode/ThumbnailData.hpp"
+#include "IMSlider.hpp"
 #include "GLModel.hpp"
+#include "I18N.hpp"
 
 #include <boost/iostreams/device/mapped_file.hpp>
 
@@ -16,8 +19,12 @@ namespace Slic3r {
 
 class Print;
 class TriangleMesh;
+class PresetBundle;
 
 namespace GUI {
+
+class PartPlateList;
+class OpenGLManager;
 
 class GCodeViewer
 {
@@ -377,6 +384,10 @@ class GCodeViewer
     {
         GLVolumeCollection volumes;
         bool visible{ false };
+        //BBS: always load shell when preview
+        int print_id{ -1 };
+        int print_modify_count { -1 };
+        bool previewing{ false };
     };
 
     // helper to render extrusion paths
@@ -604,7 +615,7 @@ public:
             bool m_visible{ true };
 
         public:
-            void init();
+            void init(std::string filename);
 
             const BoundingBoxf3& get_bounding_box() const { return m_model.get_bounding_box(); }
 
@@ -614,7 +625,8 @@ public:
             bool is_visible() const { return m_visible; }
             void set_visible(bool visible) { m_visible = visible; }
 
-            void render() const;
+            //BBS: GUI refactor: add canvas size
+            void render(int canvas_width, int canvas_height) const;
         };
 
         class GCodeWindow
@@ -648,7 +660,9 @@ public:
 
             void toggle_visibility() { m_visible = !m_visible; }
 
-            void render(float top, float bottom, uint64_t curr_line_id) const;
+            //BBS: GUI refactor: add canvas size
+            //void render(float top, float bottom, uint64_t curr_line_id) const;
+            void render(float top, float bottom, float right, uint64_t curr_line_id) const;
 
             void stop_mapping_file();
         };
@@ -670,12 +684,19 @@ public:
         GCodeWindow gcode_window;
         std::vector<unsigned int> gcode_ids;
 
-        void render(float legend_height) const;
+        //BBS: GUI refactor: add canvas size
+        void render(float legend_height, int canvas_width, int canvas_height) const;
+    };
+
+    struct ETools
+    {
+        std::vector<Color> m_tool_colors;
+        std::vector<bool>  m_tool_visibles;
     };
 
     enum class EViewType : unsigned char
     {
-        FeatureType,
+        FeatureType = 0,
         Height,
         Width,
         Feedrate,
@@ -684,6 +705,7 @@ public:
         VolumetricRate,
         Tool,
         ColorPrint,
+        FilamentId,
         Count
     };
 
@@ -691,13 +713,26 @@ private:
     bool m_gl_data_initialized{ false };
     unsigned int m_last_result_id{ 0 };
     size_t m_moves_count{ 0 };
+    //BBS: save m_gcode_result as well
+    const GCodeProcessorResult* m_gcode_result;
+    //BBS: add only gcode mode
+    bool m_only_gcode_in_preview {false};
+    std::vector<size_t> m_ssid_to_moveid_map;
+
     std::vector<TBuffer> m_buffers{ static_cast<size_t>(EMoveType::Extrude) };
     // bounding box of toolpaths
     BoundingBoxf3 m_paths_bounding_box;
     // bounding box of toolpaths + marker tools
     BoundingBoxf3 m_max_bounding_box;
+    //BBS: add shell bounding box
+    BoundingBoxf3 m_shell_bounding_box;
     float m_max_print_height{ 0.0f };
-    std::vector<Color> m_tool_colors;
+
+    //BBS save m_tools_color and m_tools_visible
+    ETools m_tools;
+    ConfigOptionMode m_user_mode;
+    bool m_fold = {false};
+
     Layers m_layers;
     std::array<unsigned int, 2> m_layers_z_range;
     std::vector<ExtrusionRole> m_roles;
@@ -707,8 +742,16 @@ private:
     std::vector<float> m_filament_densities;
     Extrusions m_extrusions;
     SequentialView m_sequential_view;
+    IMSlider* m_moves_slider;
+    IMSlider* m_layers_slider;
     Shells m_shells;
+    /*BBS GUI refactor, store displayed items in color scheme combobox */
+    std::vector<EViewType> view_type_items;
+    std::vector<std::string> view_type_items_str;
+    int       m_view_type_sel = 0;
     EViewType m_view_type{ EViewType::FeatureType };
+    std::vector<EMoveType> options_items;
+
     bool m_legend_enabled{ true };
     PrintEstimatedStatistics m_print_statistics;
     PrintEstimatedStatistics::ETimeMode m_time_estimate_mode{ PrintEstimatedStatistics::ETimeMode::Normal };
@@ -722,41 +765,78 @@ private:
     std::vector<CustomGCode::Item> m_custom_gcode_per_print_z;
 
     bool m_contained_in_bed{ true };
+    mutable bool m_no_render_path { false };
 
 public:
     GCodeViewer();
-    ~GCodeViewer() { reset(); }
+    ~GCodeViewer();
 
-    void init();
+    float m_scale = 1.0;
+    void set_scale(float scale = 1.0);
+    void init(ConfigOptionMode mode, Slic3r::PresetBundle* preset_bundle);
+    void update_by_mode(ConfigOptionMode mode);
 
     // extract rendering data from the given parameters
-    void load(const GCodeProcessorResult& gcode_result, const Print& print, bool initialized);
+    //BBS: add only gcode mode
+    void load(const GCodeProcessorResult& gcode_result, const Print& print, const BuildVolume& build_volume,
+            const std::vector<BoundingBoxf3>& exclude_bounding_box, bool initialized, ConfigOptionMode mode, bool only_gcode = false);
     // recalculate ranges in dependence of what is visible and sets tool/print colors
     void refresh(const GCodeProcessorResult& gcode_result, const std::vector<std::string>& str_tool_colors);
     void refresh_render_paths();
     void update_shells_color_by_extruder(const DynamicPrintConfig* config);
 
     void reset();
-    void render();
+    //BBS: always load shell at preview
+    void reset_shell();
+    void load_shells(const Print& print, bool initialized, bool force_previewing = false);
+    void set_shells_on_preview(bool is_previewing) { m_shells.previewing = is_previewing; }
+    //BBS: GUI refactor: add canvas width and height
+    void render(int canvas_width, int canvas_height, int right_margin);
+    //BBS
+    void _render_calibration_thumbnail_internal(ThumbnailData& thumbnail_data, const ThumbnailsParams& thumbnail_params, PartPlateList& partplate_list, OpenGLManager& opengl_manager);
+    void _render_calibration_thumbnail_framebuffer(ThumbnailData& thumbnail_data, unsigned int w, unsigned int h, const ThumbnailsParams& thumbnail_params, PartPlateList& partplate_list, OpenGLManager& opengl_manager);
+    void render_calibration_thumbnail(ThumbnailData& thumbnail_data, unsigned int w, unsigned int h, const ThumbnailsParams& thumbnail_params, PartPlateList& partplate_list, OpenGLManager& opengl_manager);
 
     bool has_data() const { return !m_roles.empty(); }
     bool can_export_toolpaths() const;
 
     const BoundingBoxf3& get_paths_bounding_box() const { return m_paths_bounding_box; }
     const BoundingBoxf3& get_max_bounding_box() const { return m_max_bounding_box; }
+    const BoundingBoxf3& get_shell_bounding_box() const { return m_shell_bounding_box; }
     const std::vector<double>& get_layers_zs() const { return m_layers.get_zs(); }
 
     const SequentialView& get_sequential_view() const { return m_sequential_view; }
     void update_sequential_view_current(unsigned int first, unsigned int last);
 
+    /* BBS IMSlider */
+    IMSlider *get_moves_slider() { return m_moves_slider; }
+    IMSlider *get_layers_slider() { return m_layers_slider; }
+    void enable_moves_slider(bool enable) const;
+    void update_moves_slider(bool set_to_max = false);
+    void update_layers_slider_mode();
+
     bool is_contained_in_bed() const { return m_contained_in_bed; }
+    //BBS: add only gcode mode
+    bool is_only_gcode_in_preview() const { return m_only_gcode_in_preview; }
 
     EViewType get_view_type() const { return m_view_type; }
-    void set_view_type(EViewType type) {
+    void set_view_type(EViewType type, bool reset_feature_type_visible = true) {
         if (type == EViewType::Count)
             type = EViewType::FeatureType;
-
-        m_view_type = type;
+        m_view_type = (EViewType)type;
+        if (reset_feature_type_visible && type == EViewType::ColorPrint) {
+            reset_visible(EViewType::FeatureType);
+        }
+    }
+    void reset_visible(EViewType type) {
+        if (type == EViewType::FeatureType) {
+            for (size_t i = 0; i < m_roles.size(); ++i) {
+                ExtrusionRole role = m_roles[i];
+                m_extrusions.role_visibility_flags = m_extrusions.role_visibility_flags | (1 << role);
+            }
+        } else if (type == EViewType::ColorPrint){
+            for(auto item: m_tools.m_tool_visibles) item = true;
+        }
     }
 
     bool is_toolpath_move_type_visible(EMoveType type) const;
@@ -776,14 +856,21 @@ public:
 
     std::vector<CustomGCode::Item>& get_custom_gcode_per_print_z() { return m_custom_gcode_per_print_z; }
     size_t get_extruders_count() { return m_extruders_count; }
+    void push_combo_style();
+    void pop_combo_style();
 
 private:
-    void load_toolpaths(const GCodeProcessorResult& gcode_result);
-    void load_shells(const Print& print, bool initialized);
+    void load_toolpaths(const GCodeProcessorResult& gcode_result, const BuildVolume& build_volume, const std::vector<BoundingBoxf3>& exclude_bounding_box);
+    //BBS: always load shell at preview
+    //void load_shells(const Print& print, bool initialized);
     void refresh_render_paths(bool keep_sequential_current_first, bool keep_sequential_current_last) const;
     void render_toolpaths();
     void render_shells();
-    void render_legend(float& legend_height);
+
+    //BBS: GUI refactor: add canvas size
+    void render_legend(float &legend_height, int canvas_width, int canvas_height, int right_margin);
+    void render_slider(int canvas_width, int canvas_height);
+
 #if ENABLE_GCODE_VIEWER_STATISTICS
     void render_statistics();
 #endif // ENABLE_GCODE_VIEWER_STATISTICS

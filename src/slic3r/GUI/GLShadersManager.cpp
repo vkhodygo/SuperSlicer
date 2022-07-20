@@ -17,7 +17,7 @@ std::pair<bool, std::string> GLShadersManager::init()
 {
     std::string error;
 
-    auto append_shader = [this, &error](const std::string& name, const GLShaderProgram::ShaderFilenames& filenames, 
+    auto append_shader = [this, &error](const std::string& name, const GLShaderProgram::ShaderFilenames& filenames,
         const std::initializer_list<std::string_view> &defines = {}) {
         m_shaders.push_back(std::make_unique<GLShaderProgram>());
         if (!m_shaders.back()->init_from_files(name, filenames, defines)) {
@@ -34,7 +34,9 @@ std::pair<bool, std::string> GLShadersManager::init()
     bool valid = true;
 
     // used to render bed axes and model, selection hints, gcode sequential view marker model, preview shells, options in gcode preview
-    valid &= append_shader("gouraud_light", { "gouraud_light.vs", "gouraud_light.fs" });
+   valid &= append_shader("gouraud_light", { "gouraud_light.vs", "gouraud_light.fs" });
+   // used to render first layer for calibration
+   valid &= append_shader("cali", { "cali.vs", "cali.fs"});
     // used to render printbed
     valid &= append_shader("printbed", { "printbed.vs", "printbed.fs" });
     // used to render options in gcode preview
@@ -62,6 +64,9 @@ std::pair<bool, std::string> GLShadersManager::init()
         valid &= append_shader("mm_gouraud", {"mm_gouraud.vs", "mm_gouraud.fs"}, {"FLIP_TRIANGLE_NORMALS"sv});
     else
         valid &= append_shader("mm_gouraud", {"mm_gouraud.vs", "mm_gouraud.fs"});
+
+    //BBS: add shader for outline
+    valid &= append_shader("outline", { "outline.vs", "outline.fs" });
 
     return { valid, error };
 }

@@ -10,6 +10,7 @@
 #include "libslic3r/PresetBundle.hpp"
 
 #include "GUI_App.hpp"
+#include "GUI_Colors.hpp"
 #include "GLCanvas3D.hpp"
 
 #include <GL/glew.h>
@@ -17,9 +18,10 @@
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/filesystem/operations.hpp>
 #include <boost/log/trivial.hpp>
+#include <boost/timer.hpp>
 
-static const float GROUND_Z = -0.02f;
-static const std::array<float, 4> DEFAULT_MODEL_COLOR = { 0.235f, 0.235f, 0.235f, 1.0f };
+static const float GROUND_Z = -0.04f;
+static const std::array<float, 4> DEFAULT_MODEL_COLOR = { 0.3255f, 0.337f, 0.337f, 1.0f };
 static const std::array<float, 4> PICKING_MODEL_COLOR = { 0.0f, 0.0f, 0.0f, 1.0f };
 
 namespace Slic3r {
@@ -32,6 +34,7 @@ bool GeometryBuffer::set_from_triangles(const std::vector<Vec2f> &triangles, flo
         return false;
     }
 
+    m_vertices.clear();
     assert(triangles.size() % 3 == 0);
     m_vertices = std::vector<Vertex>(triangles.size(), Vertex());
 
@@ -89,6 +92,35 @@ bool GeometryBuffer::set_from_lines(const Lines& lines, float z)
     return true;
 }
 
+//BBS: set from 3d lines
+bool GeometryBuffer::set_from_3d_Lines(const Lines3& lines)
+{
+    m_vertices.clear();
+
+    unsigned int v_size = 2 * (unsigned int)lines.size();
+    if (v_size == 0)
+        return false;
+
+    m_vertices = std::vector<Vertex>(v_size, Vertex());
+
+    unsigned int v_count = 0;
+    for (const Line3& l : lines) {
+        Vertex& v1 = m_vertices[v_count];
+        v1.position[0] = unscale<float>(l.a(0));
+        v1.position[1] = unscale<float>(l.a(1));
+        v1.position[2] = unscale<float>(l.a(2));
+        ++v_count;
+
+        Vertex& v2 = m_vertices[v_count];
+        v2.position[0] = unscale<float>(l.b(0));
+        v2.position[1] = unscale<float>(l.b(1));
+        v2.position[2] = unscale<float>(l.b(2));
+        ++v_count;
+    }
+
+    return true;
+}
+
 const float* GeometryBuffer::get_vertices_data() const
 {
     return (m_vertices.size() > 0) ? (const float*)m_vertices.data() : nullptr;
@@ -98,6 +130,24 @@ const float Bed3D::Axes::DefaultStemRadius = 0.5f;
 const float Bed3D::Axes::DefaultStemLength = 25.0f;
 const float Bed3D::Axes::DefaultTipRadius = 2.5f * Bed3D::Axes::DefaultStemRadius;
 const float Bed3D::Axes::DefaultTipLength = 5.0f;
+
+std::array<float, 4> Bed3D::AXIS_X_COLOR = decode_color_to_float_array("#FF0000");
+std::array<float, 4> Bed3D::AXIS_Y_COLOR = decode_color_to_float_array("#00FF00");
+std::array<float, 4> Bed3D::AXIS_Z_COLOR = decode_color_to_float_array("#0000FF");
+
+void Bed3D::update_render_colors()
+{
+    Bed3D::AXIS_X_COLOR = GLColor(RenderColor::colors[RenderCol_Axis_X]);
+    Bed3D::AXIS_Y_COLOR = GLColor(RenderColor::colors[RenderCol_Axis_Y]);
+    Bed3D::AXIS_Z_COLOR = GLColor(RenderColor::colors[RenderCol_Axis_Z]);
+}
+
+void Bed3D::load_render_colors()
+{
+    RenderColor::colors[RenderCol_Axis_X] = IMColor(Bed3D::AXIS_X_COLOR);
+    RenderColor::colors[RenderCol_Axis_Y] = IMColor(Bed3D::AXIS_Y_COLOR);
+    RenderColor::colors[RenderCol_Axis_Z] = IMColor(Bed3D::AXIS_Z_COLOR);
+}
 
 void Bed3D::Axes::render() const
 {
@@ -121,15 +171,15 @@ void Bed3D::Axes::render() const
     shader->set_uniform("emission_factor", 0.0f);
 
     // x axis
-    const_cast<GLModel*>(&m_arrow)->set_color(-1, { 0.75f, 0.0f, 0.0f, 1.0f });
+    const_cast<GLModel*>(&m_arrow)->set_color(-1, AXIS_X_COLOR);
     render_axis(Geometry::assemble_transform(m_origin, { 0.0, 0.5 * M_PI, 0.0 }).cast<float>());
 
     // y axis
-    const_cast<GLModel*>(&m_arrow)->set_color(-1, { 0.0f, 0.75f, 0.0f, 1.0f });
+    const_cast<GLModel*>(&m_arrow)->set_color(-1, AXIS_Y_COLOR);
     render_axis(Geometry::assemble_transform(m_origin, { -0.5 * M_PI, 0.0, 0.0 }).cast<float>());
 
     // z axis
-    const_cast<GLModel*>(&m_arrow)->set_color(-1, { 0.0f, 0.0f, 0.75f, 1.0f });
+    const_cast<GLModel*>(&m_arrow)->set_color(-1, AXIS_Z_COLOR);
     render_axis(Geometry::assemble_transform(m_origin).cast<float>());
 
     shader->stop_using();
@@ -137,12 +187,14 @@ void Bed3D::Axes::render() const
     glsafe(::glDisable(GL_DEPTH_TEST));
 }
 
-bool Bed3D::set_shape(const Pointfs& bed_shape, const double max_print_height, const std::string& custom_texture, const std::string& custom_model, bool force_as_custom)
+//BBS: add part plate logic
+bool Bed3D::set_shape(const Pointfs& printable_area, const double printable_height, const std::string& custom_model, bool force_as_custom,
+    const Vec2d position, bool with_reset)
 {
-    auto check_texture = [](const std::string& texture) {
+    /*auto check_texture = [](const std::string& texture) {
         boost::system::error_code ec; // so the exists call does not throw (e.g. after a permission problem)
         return !texture.empty() && (boost::algorithm::iends_with(texture, ".png") || boost::algorithm::iends_with(texture, ".svg")) && boost::filesystem::exists(texture, ec);
-    };
+    };*/
 
     auto check_model = [](const std::string& model) {
         boost::system::error_code ec;
@@ -155,17 +207,17 @@ bool Bed3D::set_shape(const Pointfs& bed_shape, const double max_print_height, c
     if (force_as_custom)
         type = Type::Custom;
     else {
-        auto [new_type, system_model, system_texture] = detect_type(bed_shape);
+        auto [new_type, system_model, system_texture] = detect_type(printable_area);
         type = new_type;
         model = system_model;
         texture = system_texture;
     }
 
-    std::string texture_filename = custom_texture.empty() ? texture : custom_texture;
+    /*std::string texture_filename = custom_texture.empty() ? texture : custom_texture;
     if (! texture_filename.empty() && ! check_texture(texture_filename)) {
         BOOST_LOG_TRIVIAL(error) << "Unable to load bed texture: " << texture_filename;
         texture_filename.clear();
-    }
+    }*/
 
     std::string model_filename = custom_model.empty() ? model : custom_model;
     if (! model_filename.empty() && ! check_model(model_filename)) {
@@ -173,29 +225,57 @@ bool Bed3D::set_shape(const Pointfs& bed_shape, const double max_print_height, c
         model_filename.clear();
     }
 
-    
-    if (m_build_volume.bed_shape() == bed_shape && m_build_volume.max_print_height() == max_print_height && m_type == type && m_texture_filename == texture_filename && m_model_filename == model_filename)
+    //BBS: add position related logic
+    if (m_bed_shape == printable_area && m_build_volume.printable_height() == printable_height && m_type == type && m_model_filename == model_filename && position == m_position)
         // No change, no need to update the UI.
         return false;
 
+    //BBS: add part plate logic, apply position to bed shape
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(":current position {%1%,%2%}, new position {%3%, %4%}") % m_position.x() % m_position.y() % position.x() % position.y();
+    m_position = position;
+    m_bed_shape = printable_area;
+    if ((position(0) != 0) || (position(1) != 0)) {
+        Pointfs new_bed_shape;
+        for (const Vec2d& p : m_bed_shape) {
+            Vec2d point(p(0) + m_position.x(), p(1) + m_position.y());
+            new_bed_shape.push_back(point);
+        }
+        m_build_volume = BuildVolume { new_bed_shape, printable_height };
+    }
+    else
+        m_build_volume = BuildVolume { printable_area, printable_height };
     m_type = type;
-    m_build_volume = BuildVolume { bed_shape, max_print_height };
-    m_texture_filename = texture_filename;
+    //m_texture_filename = texture_filename;
     m_model_filename = model_filename;
-    m_extended_bounding_box = this->calc_extended_bounding_box();
+    //BBS: add part plate logic
+    m_extended_bounding_box = this->calc_extended_bounding_box(false);
 
-    ExPolygon poly{ Polygon::new_scale(bed_shape) };
+    //BBS: add part plate logic
+/*#if 0
+    ExPolygon poly{ Polygon::new_scale(printable_area) };
+#else
+    ExPolygon poly;
+    for (const Vec2d& p : printable_area) {
+        poly.contour.append(Point(scale_(p(0) + m_position.x()), scale_(p(1) + m_position.y())));
+    }
+#endif
 
     calc_triangles(poly);
 
     const BoundingBox& bed_bbox = poly.contour.bounding_box();
     calc_gridlines(poly, bed_bbox);
 
-    m_polygon = offset(poly.contour, (float)bed_bbox.radius() * 1.7f, jtRound, scale_(0.5))[0];
+    m_polygon = offset(poly.contour, (float)bed_bbox.radius() * 1.7f, jtRound, scale_(0.5))[0];*/
 
-    this->release_VBOs();
-    m_texture.reset();
-    m_model.reset();
+    if (with_reset) {
+        this->release_VBOs();
+        //m_texture.reset();
+        m_model.reset();
+    }
+    //BBS: add part plate logic, always update model offset
+    //else {
+        update_model_offset();
+    //}
 
     // Set the origin and size for rendering the coordinate system axes.
     m_axes.set_origin({ 0.0, 0.0, static_cast<double>(GROUND_Z) });
@@ -205,7 +285,23 @@ bool Bed3D::set_shape(const Pointfs& bed_shape, const double max_print_height, c
     return true;
 }
 
-bool Bed3D::contains(const Point& point) const
+//BBS: add api to set position for partplate related bed
+void Bed3D::set_position(Vec2d& position)
+{
+    set_shape(m_bed_shape, m_build_volume.printable_height(), m_model_filename, false, position, false);
+}
+
+void Bed3D::set_axes_mode(bool origin)
+{
+    if (origin) {
+        m_axes.set_origin({ 0.0, 0.0, static_cast<double>(GROUND_Z) });
+    }
+    else {
+        m_axes.set_origin({ m_position.x(), m_position.y(), static_cast<double>(GROUND_Z) });
+    }
+}
+
+/*bool Bed3D::contains(const Point& point) const
 {
     return m_polygon.contains(point);
 }
@@ -213,20 +309,20 @@ bool Bed3D::contains(const Point& point) const
 Point Bed3D::point_projection(const Point& point) const
 {
     return m_polygon.point_projection(point);
-}
+}*/
 
-void Bed3D::render(GLCanvas3D& canvas, bool bottom, float scale_factor, bool show_axes, bool show_texture)
+void Bed3D::render(GLCanvas3D& canvas, bool bottom, float scale_factor, bool show_axes)
 {
-    render_internal(canvas, bottom, scale_factor, show_axes, show_texture, false);
+    render_internal(canvas, bottom, scale_factor, show_axes);
 }
 
-void Bed3D::render_for_picking(GLCanvas3D& canvas, bool bottom, float scale_factor)
+/*void Bed3D::render_for_picking(GLCanvas3D& canvas, bool bottom, float scale_factor)
 {
     render_internal(canvas, bottom, scale_factor, false, false, true);
-}
+}*/
 
 void Bed3D::render_internal(GLCanvas3D& canvas, bool bottom, float scale_factor,
-    bool show_axes, bool show_texture, bool picking)
+    bool show_axes)
 {
     float* factor = const_cast<float*>(&m_scale_factor);
     *factor = scale_factor;
@@ -236,22 +332,24 @@ void Bed3D::render_internal(GLCanvas3D& canvas, bool bottom, float scale_factor,
 
     glsafe(::glEnable(GL_DEPTH_TEST));
 
-    m_model.set_color(-1, picking ? PICKING_MODEL_COLOR : DEFAULT_MODEL_COLOR);
+    m_model.set_color(-1, DEFAULT_MODEL_COLOR);
 
     switch (m_type)
     {
-    case Type::System: { render_system(canvas, bottom, show_texture); break; }
+    case Type::System: { render_system(canvas, bottom); break; }
     default:
-    case Type::Custom: { render_custom(canvas, bottom, show_texture, picking); break; }
+    case Type::Custom: { render_custom(canvas, bottom); break; }
     }
 
     glsafe(::glDisable(GL_DEPTH_TEST));
 }
 
+//BBS: add partplate related logic
 // Calculate an extended bounding box from axes and current model for visualization purposes.
-BoundingBoxf3 Bed3D::calc_extended_bounding_box() const
+BoundingBoxf3 Bed3D::calc_extended_bounding_box(bool consider_model_offset) const
 {
     BoundingBoxf3 out { m_build_volume.bounding_volume() };
+
     const Vec3d size = out.size();
     // ensures that the bounding box is set as defined or the following calls to merge() will not work as intented
     if (size.x() > 0.0 && size.y() > 0.0 && !out.defined)
@@ -260,18 +358,24 @@ BoundingBoxf3 Bed3D::calc_extended_bounding_box() const
     out.min.z() = 0.0;
     out.max.z() = 0.0;
     // extend to contain axes
-    out.merge(m_axes.get_origin() + m_axes.get_total_length() * Vec3d::Ones());
+    //BBS: add part plate related logic.
+    Vec3d offset{ m_position.x(), m_position.y(), 0.f };
+    //out.merge(m_axes.get_origin() + offset + m_axes.get_total_length() * Vec3d::Ones());
+    out.merge(Vec3d(0.f, 0.f, GROUND_Z) + offset + m_axes.get_total_length() * Vec3d::Ones());
     out.merge(out.min + Vec3d(-Axes::DefaultTipRadius, -Axes::DefaultTipRadius, out.max.z()));
-    // extend to contain model, if any
-    BoundingBoxf3 model_bb = m_model.get_bounding_box();
-    if (model_bb.defined) {
-        model_bb.translate(m_model_offset);
-        out.merge(model_bb);
+    //BBS: add part plate related logic.
+    if (consider_model_offset) {
+        // extend to contain model, if any
+        BoundingBoxf3 model_bb = m_model.get_bounding_box();
+        if (model_bb.defined) {
+            model_bb.translate(m_model_offset);
+            out.merge(model_bb);
+        }
     }
     return out;
 }
 
-void Bed3D::calc_triangles(const ExPolygon& poly)
+/*void Bed3D::calc_triangles(const ExPolygon& poly)
 {
     if (! m_triangles.set_from_triangles(triangulate_expolygon_2f(poly, NORMALS_UP), GROUND_Z))
         BOOST_LOG_TRIVIAL(error) << "Unable to create bed triangles";
@@ -302,7 +406,7 @@ void Bed3D::calc_gridlines(const ExPolygon& poly, const BoundingBox& bed_bbox)
 
     if (!m_gridlines.set_from_lines(gridlines, GROUND_Z))
         BOOST_LOG_TRIVIAL(error) << "Unable to create bed grid lines\n";
-}
+}*/
 
 // Try to match the print bed shape with the shape of an active profile. If such a match exists,
 // return the print bed model.
@@ -312,11 +416,20 @@ std::tuple<Bed3D::Type, std::string, std::string> Bed3D::detect_type(const Point
     if (bundle != nullptr) {
         const Preset* curr = &bundle->printers.get_selected_preset();
         while (curr != nullptr) {
-            if (curr->config.has("bed_shape")) {
-                if (shape == dynamic_cast<const ConfigOptionPoints*>(curr->config.option("bed_shape"))->values) {
-                    std::string model_filename = PresetUtils::system_printer_bed_model(*curr);
-                    std::string texture_filename = PresetUtils::system_printer_bed_texture(*curr);
-                    if (!model_filename.empty() && !texture_filename.empty())
+            if (curr->config.has("printable_area")) {
+                std::string texture_filename, model_filename;
+                if (shape == dynamic_cast<const ConfigOptionPoints*>(curr->config.option("printable_area"))->values) {
+                    if (curr->is_system)
+                        model_filename = PresetUtils::system_printer_bed_model(*curr);
+                    else {
+                        auto *printer_model = curr->config.opt<ConfigOptionString>("printer_model");
+                        if (printer_model != nullptr && ! printer_model->value.empty()) {
+                            model_filename = bundle->get_stl_model_for_printer_model(printer_model->value);
+                        }
+                    }
+                    //std::string model_filename = PresetUtils::system_printer_bed_model(*curr);
+                    //std::string texture_filename = PresetUtils::system_printer_bed_texture(*curr);
+                    if (!model_filename.empty())
                         return { Type::System, model_filename, texture_filename };
                 }
             }
@@ -334,16 +447,16 @@ void Bed3D::render_axes() const
         m_axes.render();
 }
 
-void Bed3D::render_system(GLCanvas3D& canvas, bool bottom, bool show_texture) const
+void Bed3D::render_system(GLCanvas3D& canvas, bool bottom) const
 {
     if (!bottom)
         render_model();
 
-    if (show_texture)
-        render_texture(bottom, canvas);
+    /*if (show_texture)
+        render_texture(bottom, canvas);*/
 }
 
-void Bed3D::render_texture(bool bottom, GLCanvas3D& canvas) const
+/*void Bed3D::render_texture(bool bottom, GLCanvas3D& canvas) const
 {
     GLTexture* texture = const_cast<GLTexture*>(&m_texture);
     GLTexture* temp_texture = const_cast<GLTexture*>(&m_temp_texture);
@@ -374,7 +487,7 @@ void Bed3D::render_texture(bool bottom, GLCanvas3D& canvas) const
                 render_default(bottom, false);
                 return;
             }
-        } 
+        }
         else if (boost::algorithm::iends_with(m_texture_filename, ".png")) {
             // generate a temporary lower resolution texture to show while no main texture levels have been compressed
             if (temp_texture->get_id() == 0 || temp_texture->get_source() != m_texture_filename) {
@@ -476,6 +589,26 @@ void Bed3D::render_texture(bool bottom, GLCanvas3D& canvas) const
             shader->stop_using();
         }
     }
+}*/
+
+//BBS: add part plate related logic
+void Bed3D::update_model_offset() const
+{
+    // move the model so that its origin (0.0, 0.0, 0.0) goes into the bed shape center and a bit down to avoid z-fighting with the texture quad
+    Vec3d shift = m_extended_bounding_box.center();
+    shift(2) = -0.03;
+    Vec3d* model_offset_ptr = const_cast<Vec3d*>(&m_model_offset);
+    *model_offset_ptr = shift;
+    //BBS: TODO: hack for current stl for BBL printer
+    if (std::string::npos != m_model_filename.find("bbl-3dp-"))
+    {
+        (*model_offset_ptr)(0) -= 128.f;
+        (*model_offset_ptr)(1) -= 128.f;
+        (*model_offset_ptr)(2) = -0.41 + GROUND_Z;
+    }
+
+    // update extended bounding box
+    const_cast<BoundingBoxf3&>(m_extended_bounding_box) = calc_extended_bounding_box();
 }
 
 void Bed3D::render_model() const
@@ -488,11 +621,7 @@ void Bed3D::render_model() const
     if (model->get_filename() != m_model_filename && model->init_from_file(m_model_filename)) {
         model->set_color(-1, DEFAULT_MODEL_COLOR);
 
-        // move the model so that its origin (0.0, 0.0, 0.0) goes into the bed shape center and a bit down to avoid z-fighting with the texture quad
-        *const_cast<Vec3d*>(&m_model_offset) = to_3d(m_build_volume.bounding_volume2d().center(), -0.03);
-
-        // update extended bounding box
-        const_cast<BoundingBoxf3&>(m_extended_bounding_box) = this->calc_extended_bounding_box();
+        update_model_offset();
     }
 
     if (!model->get_filename().empty()) {
@@ -509,23 +638,23 @@ void Bed3D::render_model() const
     }
 }
 
-void Bed3D::render_custom(GLCanvas3D& canvas, bool bottom, bool show_texture, bool picking) const
+void Bed3D::render_custom(GLCanvas3D& canvas, bool bottom) const
 {
-    if (m_texture_filename.empty() && m_model_filename.empty()) {
-        render_default(bottom, picking);
+    if (m_model_filename.empty()) {
+        render_default(bottom);
         return;
     }
 
     if (!bottom)
         render_model();
 
-    if (show_texture)
-        render_texture(bottom, canvas);
+    /*if (show_texture)
+        render_texture(bottom, canvas);*/
 }
 
-void Bed3D::render_default(bool bottom, bool picking) const
+void Bed3D::render_default(bool bottom) const
 {
-    const_cast<GLTexture*>(&m_texture)->reset();
+    /*const_cast<GLTexture*>(&m_texture)->reset();
 
     unsigned int triangles_vcount = m_triangles.get_vertices_count();
     if (triangles_vcount > 0) {
@@ -561,7 +690,7 @@ void Bed3D::render_default(bool bottom, bool picking) const
         glsafe(::glDisableClientState(GL_VERTEX_ARRAY));
 
         glsafe(::glDisable(GL_BLEND));
-    }
+    }*/
 }
 
 void Bed3D::release_VBOs()

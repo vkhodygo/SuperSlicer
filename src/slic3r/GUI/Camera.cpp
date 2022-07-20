@@ -37,7 +37,7 @@ void Camera::set_type(EType type)
     if (m_type != type && (type == EType::Ortho || type == EType::Perspective)) {
         m_type = type;
         if (m_update_config_on_type_change_enabled) {
-            wxGetApp().app_config->set("use_perspective_camera", (m_type == EType::Perspective) ? "1" : "0");
+            wxGetApp().app_config->set_bool("use_perspective_camera", m_type == EType::Perspective);
             wxGetApp().app_config->save();
         }
     }
@@ -54,7 +54,9 @@ void Camera::select_next_type()
 
 void Camera::set_target(const Vec3d& target)
 {
-    const Vec3d new_target = validate_target(target);
+    //BBS do not check validation
+    //const Vec3d new_target = validate_target(target);
+    const Vec3d new_target = target;
     const Vec3d new_displacement = new_target - m_target;
     if (!new_displacement.isApprox(Vec3d::Zero())) {
         m_target = new_target;
@@ -89,6 +91,8 @@ void Camera::select_view(const std::string& direction)
         look_at(m_target - m_distance * Vec3d::UnitY(), m_target, Vec3d::UnitZ());
     else if (direction == "rear")
         look_at(m_target + m_distance * Vec3d::UnitY(), m_target, Vec3d::UnitZ());
+    else if (direction == "topfront")
+        look_at(m_target - 0.707 * m_distance * Vec3d::UnitY() + 0.707 * m_distance * Vec3d::UnitZ(), m_target, Vec3d::UnitY() + Vec3d::UnitZ());
 }
 
 double Camera::get_fov() const
@@ -210,7 +214,11 @@ void Camera::debug_render() const
     imgui.begin(std::string("Camera statistics"), ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse);
 
     std::string type = get_type_as_string();
-    if (wxGetApp().plater()->get_mouse3d_controller().connected() || (wxGetApp().app_config->get("use_free_camera") == "1"))
+    if (wxGetApp().plater()->get_mouse3d_controller().connected()
+#ifdef SUPPORT_FREE_CAMERA
+        || (wxGetApp().app_config->get("use_free_camera") == "1")
+#endif
+        )
         type += "/free";
     else
         type += "/constrained";
@@ -256,6 +264,28 @@ void Camera::debug_render() const
 }
 #endif // ENABLE_CAMERA_STATISTICS
 
+void Camera::rotate_on_sphere_with_target(double delta_azimut_rad, double delta_zenit_rad, bool apply_limits, Vec3d target)
+{
+    m_zenit += Geometry::rad2deg(delta_zenit_rad);
+    if (apply_limits) {
+        if (m_zenit > 90.0f) {
+            delta_zenit_rad -= Geometry::deg2rad(m_zenit - 90.0f);
+            m_zenit = 90.0f;
+        }
+        else if (m_zenit < -90.0f) {
+            delta_zenit_rad -= Geometry::deg2rad(m_zenit + 90.0f);
+            m_zenit = -90.0f;
+        }
+    }
+
+    Vec3d translation = m_view_matrix.translation() + m_view_rotation * target;
+    auto rot_z = Eigen::AngleAxisd(delta_azimut_rad, Vec3d::UnitZ());
+    m_view_rotation *= rot_z * Eigen::AngleAxisd(delta_zenit_rad, rot_z.inverse() * get_dir_right());
+    m_view_rotation.normalize();
+    m_view_matrix.fromPositionOrientationScale(m_view_rotation * (-target) + translation, m_view_rotation, Vec3d(1., 1., 1.));
+}
+
+
 void Camera::rotate_on_sphere(double delta_azimut_rad, double delta_zenit_rad, bool apply_limits)
 {
     m_zenit += Geometry::rad2deg(delta_zenit_rad);
@@ -275,6 +305,20 @@ void Camera::rotate_on_sphere(double delta_azimut_rad, double delta_zenit_rad, b
     m_view_rotation *= rot_z * Eigen::AngleAxisd(delta_zenit_rad, rot_z.inverse() * get_dir_right());
     m_view_rotation.normalize();
     m_view_matrix.fromPositionOrientationScale(m_view_rotation * (- m_target) + translation, m_view_rotation, Vec3d(1., 1., 1.));
+}
+
+//BBS rotate with target
+void Camera::rotate_local_with_target(const Vec3d& rotation_rad, Vec3d target)
+{
+    double angle = rotation_rad.norm();
+    if (std::abs(angle) > EPSILON) {
+	    Vec3d translation = m_view_matrix.translation() + m_view_rotation * target;
+	    Vec3d axis        = m_view_rotation.conjugate() * rotation_rad.normalized();
+        m_view_rotation *= Eigen::Quaterniond(Eigen::AngleAxisd(angle, axis));
+        m_view_rotation.normalize();
+	    m_view_matrix.fromPositionOrientationScale(m_view_rotation * (-target) + translation, m_view_rotation, Vec3d(1., 1., 1.));
+	    update_zenit();
+	}
 }
 
 // Virtual trackball, rotate around an axis, where the eucledian norm of the axis gives the rotation angle in radians.
@@ -455,6 +499,19 @@ void Camera::set_distance(double distance)
     }
 }
 
+void Camera::load_camera_view(Camera& cam)
+{
+    m_target = cam.get_target();
+    m_zoom = cam.get_zoom();
+    m_scene_box = cam.get_scene_box();
+    m_viewport = cam.get_viewport();
+    m_view_matrix = cam.get_view_matrix();
+    m_projection_matrix = cam.get_projection_matrix();
+    m_view_rotation = cam.get_view_rotation();
+    m_frustrum_zs = cam.get_z_range();
+    m_zenit = cam.get_zenit();
+}
+
 void Camera::look_at(const Vec3d& position, const Vec3d& target, const Vec3d& up)
 {
     const Vec3d unit_z = (position - target).normalized();
@@ -494,14 +551,17 @@ void Camera::look_at(const Vec3d& position, const Vec3d& target, const Vec3d& up
 
 void Camera::set_default_orientation()
 {
-    m_zenit = 45.0f;
+    // BBS modify default orientation
+    look_at(m_target - 0.707 * m_distance * Vec3d::UnitY() + 0.707 * m_distance * Vec3d::UnitZ(), m_target, Vec3d::UnitY() + Vec3d::UnitZ());
+
+    /*m_zenit = 45.0f;
     const double theta_rad = Geometry::deg2rad(-(double)m_zenit);
     const double phi_rad = Geometry::deg2rad(45.0);
     const double sin_theta = ::sin(theta_rad);
     const Vec3d camera_pos = m_target + m_distance * Vec3d(sin_theta * ::sin(phi_rad), sin_theta * ::cos(phi_rad), ::cos(theta_rad));
     m_view_rotation = Eigen::AngleAxisd(theta_rad, Vec3d::UnitX()) * Eigen::AngleAxisd(phi_rad, Vec3d::UnitZ());
     m_view_rotation.normalize();
-    m_view_matrix.fromPositionOrientationScale(m_view_rotation * (-camera_pos), m_view_rotation, Vec3d::Ones());
+    m_view_matrix.fromPositionOrientationScale(m_view_rotation * (-camera_pos), m_view_rotation, Vec3d::Ones());*/
 }
 
 Vec3d Camera::validate_target(const Vec3d& target) const
@@ -509,7 +569,8 @@ Vec3d Camera::validate_target(const Vec3d& target) const
     BoundingBoxf3 test_box = m_scene_box;
     test_box.translate(-m_scene_box.center());
     // We may let this factor be customizable
-    static const double ScaleFactor = 1.5;
+    //BBS enlarge scene box factor
+    static const double ScaleFactor = 3.0;
     test_box.scale(ScaleFactor);
     test_box.translate(m_scene_box.center());
 

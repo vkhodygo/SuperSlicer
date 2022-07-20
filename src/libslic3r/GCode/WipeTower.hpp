@@ -23,6 +23,9 @@ class WipeTower
 public:
     static const std::string never_skip_tag() { return "_GCODE_WIPE_TOWER_NEVER_SKIP_TAG"; }
 
+	// WipeTower height to minimum depth map
+	static const std::map<float, float> min_depth_per_height;
+
     struct Extrusion
     {
 		Extrusion(const Vec2f &pos, float width, unsigned int tool) : pos(pos), width(width), tool(tool) {}
@@ -64,11 +67,19 @@ public:
         // an extra retraction-unretraction pair.
         std::vector<Vec2f> wipe_path;
 
+		// BBS
+        float purge_volume = 0.f;
+
         // Initial tool
         int initial_tool;
 
         // New tool
         int new_tool;
+
+        // BBS: in bbl filament_change_gcode, toolhead will be moved to the wipe tower automatically.
+        // But if finish_layer_tcr is before tool_change_tcr, we have to travel to the wipe tower before
+        // executing the gcode finish_layer_tcr.
+        bool is_finish_first = false;
 
 		// Sum the total length of the extrusion.
 		float total_extrusion_length_in_plane() {
@@ -119,13 +130,16 @@ public:
     // WipeTowerWriter is moved from !
     ToolChangeResult construct_tcr(WipeTowerWriter& writer,
                                    bool priming,
-                                   size_t old_tool) const;
+                                   size_t old_tool,
+                                   bool is_finish,
+                                   float purge_volume) const;
 
 	// x			-- x coordinates of wipe tower in mm ( left bottom corner )
 	// y			-- y coordinates of wipe tower in mm ( left bottom corner )
 	// width		-- width of wipe tower in mm ( default 60 mm - leave as it is )
 	// wipe_area	-- space available for one toolchange in mm
-    WipeTower(const PrintConfig& config, const std::vector<std::vector<float>>& wiping_matrix, size_t initial_tool);
+	// BBS: add partplate logic
+	WipeTower(const PrintConfig& config, int plate_idx, Vec3d plate_origin, const float wipe_volume, size_t initial_tool, const float wipe_tower_height);
 
 
 	// Set the extruder properties.
@@ -133,7 +147,7 @@ public:
 
 	// Appends into internal structure m_plan containing info about the future wipe tower
 	// to be used before building begins. The entries must be added ordered in z.
-    void plan_toolchange(float z_par, float layer_height_par, unsigned int old_tool, unsigned int new_tool, float wipe_volume = 0.f);
+	void plan_toolchange(float z_par, float layer_height_par, unsigned int old_tool, unsigned int new_tool, float wipe_volume = 0.f, float prime_volume = 0.f);
 
 	// Iterates through prepared m_plan, generates ToolChangeResults and appends them to "result"
 	void generate(std::vector<std::vector<ToolChangeResult>> &result);
@@ -162,7 +176,8 @@ public:
 		m_layer_height			= layer_height;
 		m_depth_traversed  = 0.f;
         m_current_layer_finished = false;
-		m_current_shape = (! is_first_layer && m_current_shape == SHAPE_NORMAL) ? SHAPE_REVERSED : SHAPE_NORMAL;
+		//m_current_shape = (! is_first_layer && m_current_shape == SHAPE_NORMAL) ? SHAPE_REVERSED : SHAPE_NORMAL;
+		m_current_shape = SHAPE_NORMAL;
 		if (is_first_layer) {
             m_num_layer_changes = 0;
             m_num_tool_changes 	= 0;
@@ -187,7 +202,7 @@ public:
 	// Returns gcode to prime the nozzles at the front edge of the print bed.
 	std::vector<ToolChangeResult> prime(
 		// print_z of the first layer.
-		float 						first_layer_height, 
+		float 						initial_layer_print_height, 
 		// Extruder indices, in the order to be primed. The last extruder will later print the wipe tower brim, print brim and the object.
 		const std::vector<unsigned int> &tools,
 		// If true, the last priming are will be the same as the other priming areas, and the rest of the wipe will be performed inside the wipe tower.
@@ -196,11 +211,12 @@ public:
 
 	// Returns gcode for a toolchange and a final print head position.
 	// On the first layer, extrude a brim around the future wipe tower first.
-    ToolChangeResult tool_change(size_t new_tool);
+	// BBS
+	ToolChangeResult tool_change(size_t new_tool, bool extrude_perimeter = false);
 
 	// Fill the unfilled space with a sparse infill.
 	// Call this method only if layer_finished() is false.
-	ToolChangeResult finish_layer();
+	ToolChangeResult finish_layer(bool extruder_perimeter = true);
 
 	// Is the current layer finished?
 	bool 			 layer_finished() const {
@@ -213,16 +229,19 @@ public:
     struct FilamentParameters {
         std::string 	    material = "PLA";
         bool                is_soluble = false;
-        int  			    temperature = 0;
-        int  			    first_layer_temperature = 0;
-        float               loading_speed = 0.f;
-        float               loading_speed_start = 0.f;
-        float               unloading_speed = 0.f;
-        float               unloading_speed_start = 0.f;
-        float               delay = 0.f ;
-        int                 cooling_moves = 0;
-        float               cooling_initial_speed = 0.f;
-        float               cooling_final_speed = 0.f;
+        // BBS
+        bool                is_support = false;
+        int  			    nozzle_temperature = 0;
+        int  			    nozzle_temperature_initial_layer = 0;
+        // BBS: remove useless config
+        //float               loading_speed = 0.f;
+        //float               loading_speed_start = 0.f;
+        //float               unloading_speed = 0.f;
+        //float               unloading_speed_start = 0.f;
+        //float               delay = 0.f ;
+        //int                 cooling_moves = 0;
+        //float               cooling_initial_speed = 0.f;
+        //float               cooling_final_speed = 0.f;
         float               ramming_line_width_multiplicator = 1.f;
         float               ramming_step_multiplicator = 1.f;
         float               max_e_speed = std::numeric_limits<float>::max();
@@ -249,6 +268,8 @@ private:
     Vec2f  m_wipe_tower_pos; 			// Left front corner of the wipe tower in mm.
 	float  m_wipe_tower_width; 			// Width of the wipe tower.
 	float  m_wipe_tower_depth 	= 0.f; 	// Depth of the wipe tower
+	// BBS
+	float  m_wipe_tower_height = 0.f;
     float  m_wipe_tower_brim_width      = 0.f; 	// Width of brim (mm) from config
     float  m_wipe_tower_brim_width_real = 0.f; 	// Width of brim (mm) after generation
 	float  m_wipe_tower_rotation_angle = 0.f; // Wipe tower rotation angle in degrees (with respect to x axis)
@@ -263,13 +284,15 @@ private:
     size_t m_first_layer_idx    = size_t(-1);
 
 	// G-code generator parameters.
-    float           m_cooling_tube_retraction   = 0.f;
-    float           m_cooling_tube_length       = 0.f;
-    float           m_parking_pos_retraction    = 0.f;
-    float           m_extra_loading_move        = 0.f;
+    // BBS: remove useless config
+    //float           m_cooling_tube_retraction   = 0.f;
+    //float           m_cooling_tube_length       = 0.f;
+    //float           m_parking_pos_retraction    = 0.f;
+    //float           m_extra_loading_move        = 0.f;
     float           m_bridging                  = 0.f;
     bool            m_no_sparse_layers          = false;
-    bool            m_set_extruder_trimpot      = false;
+    // BBS: remove useless config
+    //bool            m_set_extruder_trimpot      = false;
     bool            m_adhesion                  = true;
     GCodeFlavor     m_gcode_flavor;
 
@@ -297,7 +320,9 @@ private:
 	// A fill-in direction (positive Y, negative Y) alternates with each layer.
 	wipe_shape   	m_current_shape = SHAPE_NORMAL;
     size_t 	m_current_tool  = 0;
-    const std::vector<std::vector<float>> wipe_volumes;
+	// BBS
+    //const std::vector<std::vector<float>> wipe_volumes;
+	const float		m_wipe_volume;
 
 	float           m_depth_traversed = 0.f; // Current y position at the wipe tower.
     bool            m_current_layer_finished = false;
@@ -328,6 +353,9 @@ private:
     // Goes through m_plan, calculates border and finish_layer extrusions and subtracts them from last wipe
     void save_on_last_wipe();
 
+	// BBS
+	box_coordinates align_perimeter(const box_coordinates& perimeter_box);
+
 
     // to store information about tool changes for a given layer
 	struct WipeTowerInfo{
@@ -338,8 +366,11 @@ private:
             float ramming_depth;
             float first_wipe_line;
             float wipe_volume;
-            ToolChange(size_t old, size_t newtool, float depth=0.f, float ramming_depth=0.f, float fwl=0.f, float wv=0.f)
-            : old_tool{old}, new_tool{newtool}, required_depth{depth}, ramming_depth{ramming_depth}, first_wipe_line{fwl}, wipe_volume{wv} {}
+			float wipe_length;
+			// BBS
+			float purge_volume;
+            ToolChange(size_t old, size_t newtool, float depth=0.f, float ramming_depth=0.f, float fwl=0.f, float wv=0.f, float wl = 0, float pv = 0)
+				: old_tool{ old }, new_tool{ newtool }, required_depth{ depth }, ramming_depth{ ramming_depth }, first_wipe_line{ fwl }, wipe_volume{ wv }, wipe_length{ wl }, purge_volume{ pv } {}
 		};
 		float z;		// z position of the layer
 		float height;	// layer height
@@ -359,9 +390,10 @@ private:
     // Stores information about used filament length per extruder:
     std::vector<float> m_used_filament_length;
 
+    // BBS: consider both soluable and support properties
     // Return index of first toolchange that switches to non-soluble extruder
     // ot -1 if there is no such toolchange.
-    int first_toolchange_to_nonsoluble(
+    int first_toolchange_to_nonsoluble_nonsupport(
             const std::vector<WipeTowerInfo::ToolChange>& tool_changes) const;
 
 	void toolchange_Unload(

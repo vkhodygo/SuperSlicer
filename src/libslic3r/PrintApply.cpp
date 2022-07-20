@@ -134,7 +134,9 @@ static std::vector<PrintObjectTrafoAndInstances> print_objects_from_model_object
 {
     std::set<PrintObjectTrafoAndInstances> trafos;
     PrintObjectTrafoAndInstances           trafo;
-    for (ModelInstance *model_instance : model_object.instances)
+    //BBS: add useful logs for debug
+    int index = 0;
+    for (ModelInstance *model_instance : model_object.instances) {
         if (model_instance->is_printable()) {
             trafo.trafo = model_instance->get_matrix();
             auto shift = Point::new_scale(trafo.trafo.data()[12], trafo.trafo.data()[13]);
@@ -144,7 +146,16 @@ static std::vector<PrintObjectTrafoAndInstances> print_objects_from_model_object
             // Search or insert a trafo.
             auto it = trafos.emplace(trafo).first;
             const_cast<PrintObjectTrafoAndInstances&>(*it).instances.emplace_back(PrintInstance{ nullptr, model_instance, shift });
+            //BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(", Line %1%: found object %2%'s instance %3% for print")%__LINE__ %model_object.name %index;
         }
+        else {
+            //BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(", Line %1%: found object %2%'s instance %3% not printable")%__LINE__ %model_object.name %index;
+            //BOOST_LOG_TRIVIAL(debug) << boost::format(" object printable %1%, instance printable %2%, print_volume_state %3%")%model_object.printable %model_instance->printable %model_instance->print_volume_state;
+        }
+        index++;
+    }
+
+    //BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", Line %1%: got %2% print objects")%__LINE__ %trafos.size();
     return std::vector<PrintObjectTrafoAndInstances>(trafos.begin(), trafos.end());
 }
 
@@ -197,10 +208,12 @@ static bool custom_per_printz_gcodes_tool_changes_differ(const std::vector<Custo
 }
 
 // Collect changes to print config, account for overrides of extruder retract values by filament presets.
+//BBS: add plate index
 static t_config_option_keys print_config_diffs(
     const PrintConfig        &current_config,
     const DynamicPrintConfig &new_full_config,
-    DynamicPrintConfig       &filament_overrides)
+    DynamicPrintConfig       &filament_overrides,
+    int plate_index)
 {
     const std::vector<std::string> &extruder_retract_keys = print_config_def.extruder_retract_keys();
     const std::string               filament_prefix       = "filament_";
@@ -229,22 +242,55 @@ static t_config_option_keys print_config_diffs(
                 } else
                     delete opt_copy;
             }
-        } else if (*opt_new != *opt_old)
-            print_diff.emplace_back(opt_key);
+        } else if (*opt_new != *opt_old) {
+            //BBS: add plate_index logic for wipe_tower_x/wipe_tower_y
+            if (!opt_key.compare("wipe_tower_x") || !opt_key.compare("wipe_tower_y")) {
+                const ConfigOptionFloats* option_new = dynamic_cast<const ConfigOptionFloats*>(opt_new);
+                const ConfigOptionFloats* option_old = dynamic_cast<const ConfigOptionFloats*>(opt_old);
+                if ((plate_index < option_new->values.size())&&(plate_index < option_old->values.size()))
+                {
+                    float value_new = option_new->values[plate_index];
+                    float value_old = option_old->values[plate_index];
+                    if (value_old != value_new)
+                        print_diff.emplace_back(opt_key);
+                }
+                else if ((plate_index < option_new->values.size())||(plate_index < option_old->values.size()))
+                    print_diff.emplace_back(opt_key);
+            }
+            else
+                print_diff.emplace_back(opt_key);
+        }
     }
 
     return print_diff;
 }
 
 // Prepare for storing of the full print config into new_full_config to be exported into the G-code and to be used by the PlaceholderParser.
-static t_config_option_keys full_print_config_diffs(const DynamicPrintConfig &current_full_config, const DynamicPrintConfig &new_full_config)
+//BBS: add plate index
+static t_config_option_keys full_print_config_diffs(const DynamicPrintConfig &current_full_config, const DynamicPrintConfig &new_full_config, int plate_index)
 {
     t_config_option_keys full_config_diff;
     for (const t_config_option_key &opt_key : new_full_config.keys()) {
         const ConfigOption *opt_old = current_full_config.option(opt_key);
         const ConfigOption *opt_new = new_full_config.option(opt_key);
-        if (opt_old == nullptr || *opt_new != *opt_old)
-            full_config_diff.emplace_back(opt_key);
+        if (opt_old == nullptr || *opt_new != *opt_old) {
+            //BBS: add plate_index logic for wipe_tower_x/wipe_tower_y
+            if (opt_old && (!opt_key.compare("wipe_tower_x") || !opt_key.compare("wipe_tower_y"))) {
+                const ConfigOptionFloats* option_new = dynamic_cast<const ConfigOptionFloats*>(opt_new);
+                const ConfigOptionFloats* option_old = dynamic_cast<const ConfigOptionFloats*>(opt_old);
+                if ((plate_index < option_new->values.size())&&(plate_index < option_old->values.size()))
+                {
+                    float value_new = option_new->values[plate_index];
+                    float value_old = option_old->values[plate_index];
+                    if (value_old != value_new)
+                        full_config_diff.emplace_back(opt_key);
+                }
+                else if ((plate_index < option_new->values.size())||(plate_index < option_old->values.size()))
+                    full_config_diff.emplace_back(opt_key);
+            }
+            else
+                full_config_diff.emplace_back(opt_key);
+        }
     }
     return full_config_diff;
 }
@@ -726,9 +772,9 @@ bool verify_update_print_object_regions(
         for (const PrintObjectRegions::PaintedRegion &region : layer_range.painted_regions) {
             const PrintObjectRegions::VolumeRegion &parent_region   = layer_range.volume_regions[region.parent];
             PrintRegionConfig                       cfg             = parent_region.region->config();
-            cfg.perimeter_extruder.value    = region.extruder_id;
-            cfg.solid_infill_extruder.value = region.extruder_id;
-            cfg.infill_extruder.value       = region.extruder_id;
+            cfg.wall_filament.value    = region.extruder_id;
+            cfg.solid_infill_filament.value = region.extruder_id;
+            cfg.sparse_infill_filament.value       = region.extruder_id;
             if (cfg != region.region->config()) {
                 // Region configuration changed.
                 if (print_region_ref_cnt(*region.region) == 0) {
@@ -847,8 +893,8 @@ static PrintObjectRegions* generate_print_object_regions(
     const PrintRegionConfig                     &default_region_config,
     const Transform3d                           &trafo,
     size_t                                       num_extruders,
-    const float                                  xy_size_compensation,
-    const std::vector<unsigned int>             &painting_extruders)
+    const float                                  xy_contour_compensation,
+    const std::vector<unsigned int>             & painting_extruders)
 {
     // Reuse the old object or generate a new one.
     auto out = print_object_regions_old ? std::unique_ptr<PrintObjectRegions>(print_object_regions_old) : std::make_unique<PrintObjectRegions>();
@@ -879,7 +925,7 @@ static PrintObjectRegions* generate_print_object_regions(
     }
 
     const bool is_mm_painted = num_extruders > 1 && std::any_of(model_volumes.cbegin(), model_volumes.cend(), [](const ModelVolume *mv) { return mv->is_mm_painted(); });
-    update_volume_bboxes(layer_ranges_regions, out->cached_volume_ids, model_volumes, out->trafo_bboxes, is_mm_painted ? 0.f : std::max(0.f, xy_size_compensation));
+    update_volume_bboxes(layer_ranges_regions, out->cached_volume_ids, model_volumes, out->trafo_bboxes, is_mm_painted ? 0.f : std::max(0.f, xy_contour_compensation));
 
     std::vector<PrintRegion*> region_set;
     auto get_create_region = [&region_set, &all_regions](PrintRegionConfig &&config) -> PrintRegion* {
@@ -946,9 +992,9 @@ static PrintObjectRegions* generate_print_object_regions(
                 if (const PrintObjectRegions::VolumeRegion &parent_region = layer_range.volume_regions[parent_region_id];
                     parent_region.model_volume->is_model_part() || parent_region.model_volume->is_modifier()) {
                     PrintRegionConfig cfg = parent_region.region->config();
-                    cfg.perimeter_extruder.value    = painted_extruder_id;
-                    cfg.solid_infill_extruder.value = painted_extruder_id;
-                    cfg.infill_extruder.value       = painted_extruder_id;
+                    cfg.wall_filament.value    = painted_extruder_id;
+                    cfg.solid_infill_filament.value = painted_extruder_id;
+                    cfg.sparse_infill_filament.value       = painted_extruder_id;
                     layer_range.painted_regions.push_back({ painted_extruder_id, parent_region_id, get_create_region(std::move(cfg))});
                 }
         // Sort the regions by parent region::print_object_region_id() and extruder_id to help the slicing algorithm when applying MMU segmentation.
@@ -967,17 +1013,21 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
     check_model_ids_validity(model);
 #endif /* _DEBUG */
 
+    //BBS: add more logs
+    BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", Line %1%: enter")%__LINE__;
     // Normalize the config.
 	new_full_config.option("print_settings_id",            true);
 	new_full_config.option("filament_settings_id",         true);
 	new_full_config.option("printer_settings_id",          true);
-    new_full_config.option("physical_printer_settings_id", true);
-    new_full_config.normalize_fdm();
+    // BBS
+    int used_filaments = this->extruders().size();
+    new_full_config.normalize_fdm(used_filaments);
 
     // Find modified keys of the various configs. Resolve overrides extruder retract values by filament profiles.
     DynamicPrintConfig   filament_overrides;
-    t_config_option_keys print_diff       = print_config_diffs(m_config, new_full_config, filament_overrides);
-    t_config_option_keys full_config_diff = full_print_config_diffs(m_full_print_config, new_full_config);
+    //BBS: add plate index
+    t_config_option_keys print_diff       = print_config_diffs(m_config, new_full_config, filament_overrides, this->m_plate_index);
+    t_config_option_keys full_config_diff = full_print_config_diffs(m_full_print_config, new_full_config, this->m_plate_index);
     // Collect changes to object and region configs.
     t_config_option_keys object_diff      = m_default_object_config.diff(new_full_config);
     t_config_option_keys region_diff      = m_default_region_config.diff(new_full_config);
@@ -986,8 +1036,11 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
     unsigned int apply_status = APPLY_STATUS_UNCHANGED;
     auto update_apply_status = [&apply_status](bool invalidated)
         { apply_status = std::max<unsigned int>(apply_status, invalidated ? APPLY_STATUS_INVALIDATED : APPLY_STATUS_CHANGED); };
-    if (! (print_diff.empty() && object_diff.empty() && region_diff.empty()))
+    if (! (print_diff.empty() && object_diff.empty() && region_diff.empty())) {
         update_apply_status(false);
+        //BBS: add more logs
+        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(", got print_diff %1%, object_diff %2%, region_diff %3%, set status to APPLY_STATUS_CHANGED")%print_diff.size() %object_diff.size() %region_diff.size();
+    }
 
     // Grab the lock for the Print / PrintObject milestones.
 	std::scoped_lock<std::mutex> lock(this->state_mutex());
@@ -998,16 +1051,17 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 
     // Apply variables to placeholder parser. The placeholder parser is used by G-code export,
     // which should be stopped if print_diff is not empty.
-    size_t num_extruders = m_config.nozzle_diameter.size();
-    bool   num_extruders_changed = false;
+    size_t num_extruders  = m_config.filament_diameter.size();
+    bool   num_extruders_changed  = false;
     if (! full_config_diff.empty()) {
+        //BBS: add more logs
+        BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: found full_config_diff changed.")%__LINE__;
         update_apply_status(this->invalidate_step(psGCodeExport));
         m_placeholder_parser.clear_config();
         // Set the profile aliases for the PrintBase::output_filename()
 		m_placeholder_parser.set("print_preset",              new_full_config.option("print_settings_id")->clone());
 		m_placeholder_parser.set("filament_preset",           new_full_config.option("filament_settings_id")->clone());
 		m_placeholder_parser.set("printer_preset",            new_full_config.option("printer_settings_id")->clone());
-        m_placeholder_parser.set("physical_printer_preset",   new_full_config.option("physical_printer_settings_id")->clone());
 		// We want the filament overrides to be applied over their respective extruder parameters by the PlaceholderParser.
 		// see "Placeholders do not respect filament overrides." GH issue #3649
 		m_placeholder_parser.apply_config(filament_overrides);
@@ -1022,9 +1076,9 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 	    // Handle changes to regions config defaults
 	    m_default_region_config.apply_only(new_full_config, region_diff, true);
         m_full_print_config = std::move(new_full_config);
-        if (num_extruders != m_config.nozzle_diameter.size()) {
-            num_extruders = m_config.nozzle_diameter.size();
-            num_extruders_changed = true;
+        if (num_extruders  != m_config.filament_diameter.size()) {
+            num_extruders  = m_config.filament_diameter.size();
+            num_extruders_changed  = true;
         }
     }
     
@@ -1049,11 +1103,11 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 			model_object_status_db.add(*model_object, ModelObjectStatus::New);
     } else {
         if (m_model.custom_gcode_per_print_z != model.custom_gcode_per_print_z) {
-            update_apply_status(num_extruders_changed || 
+            update_apply_status(num_extruders_changed  ||
             	// Tool change G-codes are applied as color changes for a single extruder printer, no need to invalidate tool ordering.
             	//FIXME The tool ordering may be invalidated unnecessarily if the custom_gcode_per_print_z.mode is not applicable
             	// to the active print / model state, and then it is reset, so it is being applicable, but empty, thus the effect is the same.
-            	(num_extruders > 1 && custom_per_printz_gcodes_tool_changes_differ(m_model.custom_gcode_per_print_z.gcodes, model.custom_gcode_per_print_z.gcodes)) ?
+            	(num_extruders  > 1 && custom_per_printz_gcodes_tool_changes_differ(m_model.custom_gcode_per_print_z.gcodes, model.custom_gcode_per_print_z.gcodes)) ?
             	// The Tool Ordering and the Wipe Tower are no more valid.
             	this->invalidate_steps({ psWipeTower, psGCodeExport }) :
             	// There is no change in Tool Changes stored in custom_gcode_per_print_z, therefore there is no need to update Tool Ordering.
@@ -1066,7 +1120,8 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
 				model_object_status_db.add(*model_object, ModelObjectStatus::Old);
         } else if (model_object_list_extended(m_model, model)) {
             // Add new objects. Their volumes and configs will be synchronized later.
-            update_apply_status(this->invalidate_step(psGCodeExport));
+            //BBS: we don't need to set invalid here, we judge it by comparing the print_object list
+            //update_apply_status(this->invalidate_step(psGCodeExport));
             for (const ModelObject *model_object : m_model.objects)
                 model_object_status_db.add(*model_object, ModelObjectStatus::Old);
             for (size_t i = m_model.objects.size(); i < model.objects.size(); ++ i) {
@@ -1074,11 +1129,16 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                 m_model.objects.emplace_back(ModelObject::new_copy(*model.objects[i]));
 				m_model.objects.back()->set_model(&m_model);
             }
+            //BBS: add more logs
+            BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: new model objects added.")%__LINE__;
         } else {
+            //BBS: add more logs
+            BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: model object changed.")%__LINE__;
             // Reorder the objects, add new objects.
             // First stop background processing before shuffling or deleting the PrintObjects in the object list.
             this->call_cancel_callback();
-            update_apply_status(this->invalidate_step(psGCodeExport));
+            //BBS: we don't need to set invalid here, we judge it by comparing the print_object list
+            //update_apply_status(this->invalidate_step(psGCodeExport));
             // Second create a new list of objects.
             std::vector<ModelObject*> model_objects_old(std::move(m_model.objects));
             m_model.objects.clear();
@@ -1143,7 +1203,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
         // Only volume IDs, volume types, transformation matrices and their order are checked, configuration and other parameters are NOT checked.
         bool solid_or_modifier_differ   = model_volume_list_changed(model_object, model_object_new, solid_or_modifier_types) ||
                                           model_mmu_segmentation_data_changed(model_object, model_object_new) ||
-                                          (model_object_new.is_mm_painted() && num_extruders_changed);
+                                          (model_object_new.is_mm_painted() && num_extruders_changed );
         bool supports_differ            = model_volume_list_changed(model_object, model_object_new, ModelVolumeType::SUPPORT_BLOCKER) ||
                                           model_volume_list_changed(model_object, model_object_new, ModelVolumeType::SUPPORT_ENFORCER);
         bool layer_height_ranges_differ = ! layer_height_ranges_equal(model_object.layer_config_ranges, model_object_new.layer_config_ranges, model_object_new.layer_height_profile.empty());
@@ -1200,8 +1260,8 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             bool object_config_changed = ! model_object.config.timestamp_matches(model_object_new.config);
 			if (object_config_changed)
 				model_object.config.assign_config(model_object_new.config);
-            if (! object_diff.empty() || object_config_changed || num_extruders_changed) {
-                PrintObjectConfig new_config = PrintObject::object_config_from_model_object(m_default_object_config, model_object, num_extruders);
+            if (! object_diff.empty() || object_config_changed || num_extruders_changed ) {
+                PrintObjectConfig new_config = PrintObject::object_config_from_model_object(m_default_object_config, model_object, num_extruders );
                 for (const PrintObjectStatus &print_object_status : print_object_status_db.get_range(model_object)) {
                     t_config_option_keys diff = print_object_status.print_object->config().diff(new_config);
                     if (! diff.empty()) {
@@ -1263,10 +1323,10 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             // Generate a list of trafos and XY offsets for instances of a ModelObject
             // Producing the config for PrintObject on demand, caching it at print_object_last.
             const PrintObject *print_object_last = nullptr;
-            auto print_object_apply_config = [this, &print_object_last, model_object, num_extruders](PrintObject *print_object) {
+            auto print_object_apply_config = [this, &print_object_last, model_object, num_extruders ](PrintObject *print_object) {
                 print_object->config_apply(print_object_last ?
                     print_object_last->config() :
-                    PrintObject::object_config_from_model_object(m_default_object_config, *model_object, num_extruders));
+                    PrintObject::object_config_from_model_object(m_default_object_config, *model_object, num_extruders ));
                 print_object_last = print_object;
             };
             if (old.empty()) {
@@ -1307,6 +1367,8 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             }
         }
         if (m_objects != print_objects_new) {
+            //BBS: add more logs
+            BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: found print object changed.")%__LINE__;
             this->call_cancel_callback();
 			update_apply_status(this->invalidate_all_steps());
             m_objects = print_objects_new;
@@ -1325,6 +1387,14 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
             print_regions_reshuffled = true;
         }
         print_object_status_db.clear();
+
+        // BBS
+        for (PrintObject* object : m_objects) {
+            auto ept_iter = std::find(print_diff.begin(), print_diff.end(), "enable_prime_tower");
+            if (object->config().adaptive_layer_height && ept_iter != print_diff.end()) {
+                update_apply_status(object->invalidate_step(posSlice));
+            }
+        }
     }
 
     // All regions now have distinct settings.
@@ -1346,10 +1416,10 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
         }
         std::vector<unsigned int> painting_extruders;
         if (const auto &volumes = print_object.model_object()->volumes;
-            num_extruders > 1 &&
+            num_extruders  > 1 &&
             std::find_if(volumes.begin(), volumes.end(), [](const ModelVolume *v) { return ! v->mmu_segmentation_facets.empty(); }) != volumes.end()) {
             //FIXME be more specific! Don't enumerate extruders that are not used for painting!
-            painting_extruders.assign(num_extruders, 0);
+            painting_extruders.assign(num_extruders , 0);
             std::iota(painting_extruders.begin(), painting_extruders.end(), 1);
         }
         if (model_object_status.print_object_regions_status == ModelObjectStatus::PrintObjectRegionsStatus::Valid) {
@@ -1368,7 +1438,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                 verify_update_print_object_regions(
                     print_object.model_object()->volumes,
                     m_default_region_config,
-                    num_extruders,
+                    num_extruders ,
                     painting_extruders,
                     *print_object_regions,
                     [it_print_object, it_print_object_end, &update_apply_status](const PrintRegionConfig &old_config, const PrintRegionConfig &new_config, const t_config_option_keys &diff_keys) {
@@ -1394,8 +1464,8 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
                 LayerRanges(print_object.model_object()->layer_config_ranges),
                 m_default_region_config,
                 model_object_status.print_instances.front().trafo,
-                num_extruders,
-                print_object.is_mm_painted() ? 0.f : float(print_object.config().xy_size_compensation.value),
+                num_extruders ,
+                print_object.is_mm_painted() ? 0.f : float(print_object.config().xy_contour_compensation.value),
                 painting_extruders);
         }
         for (auto it = it_print_object; it != it_print_object_end; ++it)
@@ -1438,6 +1508,10 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
     check_model_ids_equal(m_model, model);
 #endif /* _DEBUG */
 
+	//BBS: add timestamp logic
+	if (apply_status != APPLY_STATUS_UNCHANGED)
+		m_modified_count++;
+	BOOST_LOG_TRIVIAL(info) << __FUNCTION__ << boost::format(" %1%: finished,  this %2%, m_modified_count %3%, apply_status %4%, ")%__LINE__ %this %m_modified_count %apply_status;
 	return static_cast<ApplyStatus>(apply_status);
 }
 

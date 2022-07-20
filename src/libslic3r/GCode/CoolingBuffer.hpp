@@ -38,11 +38,12 @@ private:
     // G-code snippet cached for the support layers preceding an object layer.
     std::string                 m_gcode;
     // Internal data.
-    // X,Y,Z,E,F
+    // BBS: X,Y,Z,E,F,I,J
     std::vector<char>           m_axis;
     std::vector<float>          m_current_pos;
     // Current known fan speed or -1 if not known yet.
     int                         m_fan_speed;
+    int                         m_additional_fan_speed;
     // Cached from GCodeWriter.
     // Printing extruder IDs, zero based.
     std::vector<unsigned int>   m_extruder_ids;
@@ -56,6 +57,8 @@ private:
 
     // Old logic: proportional.
     bool                        m_cooling_logic_proportional = false;
+    //BBS: current fan speed
+    int                         m_current_fan_speed;
 };
 
 }

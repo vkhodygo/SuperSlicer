@@ -96,6 +96,8 @@ struct SlicingParameters
     // In case of a soluble interface, object_print_z_min == raft_contact_top_z, otherwise there is a gap between the raft and the 1st object layer.
     coordf_t 	object_print_z_min { 0 };
     coordf_t 	object_print_z_max { 0 };
+    //BBS
+    bool        adaptive_layer_height{ false };
 };
 static_assert(IsTriviallyCopyable<SlicingParameters>::value, "SlicingParameters class is not POD (and it should be - see constructor).");
 
@@ -118,8 +120,11 @@ inline bool equal_layering(const SlicingParameters &sp1, const SlicingParameters
             sp1.first_object_layer_bridging         == sp2.first_object_layer_bridging          &&
             sp1.soluble_interface                   == sp2.soluble_interface                    &&
             sp1.gap_raft_object                     == sp2.gap_raft_object                      &&
+            // BBS
+#if 0
             sp1.gap_object_support                  == sp2.gap_object_support                   &&
             sp1.gap_support_object                  == sp2.gap_support_object                   &&
+#endif
             sp1.raft_base_top_z                     == sp2.raft_base_top_z                      &&
             sp1.raft_interface_top_z                == sp2.raft_interface_top_z                 &&
             sp1.raft_contact_top_z                  == sp2.raft_contact_top_z                   &&

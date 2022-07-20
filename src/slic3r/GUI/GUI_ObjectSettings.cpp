@@ -1,6 +1,8 @@
 #include "GUI_ObjectSettings.hpp"
 #include "GUI_ObjectList.hpp"
 #include "GUI_Factories.hpp"
+#include "Tab.hpp"
+#include "MainFrame.hpp"
 
 #include "OptionsGroup.hpp"
 #include "GUI_App.hpp"
@@ -57,17 +59,25 @@ wxSizer* OG_Settings::get_sizer()
 
 
 ObjectSettings::ObjectSettings(wxWindow* parent) :
+#if !NEW_OBJECT_SETTING
     OG_Settings(parent, true)
+#else
+    m_parent(parent)
+#endif
 {
+#if !NEW_OBJECT_SETTING
     m_og->activate();
-    m_og->set_name(_(L("Additional Settings")));    
+    m_og->set_name(_(L("Additional process preset")));
 
     m_settings_list_sizer = new wxBoxSizer(wxVERTICAL);
     m_og->sizer->Add(m_settings_list_sizer, 1, wxEXPAND | wxLEFT, 5);
 
     m_bmp_delete = ScalableBitmap(parent, "cross");
     m_bmp_delete_focus = ScalableBitmap(parent, "cross_focus");
+#endif
 }
+
+#if !NEW_OBJECT_SETTING // BBS: new object settings
 
 bool ObjectSettings::update_settings_list()
 {
@@ -79,7 +89,7 @@ bool ObjectSettings::update_settings_list()
     auto config         = wxGetApp().obj_list()->config();
 
     const auto item = objects_ctrl->GetSelection();
-    
+
     if (!item || !objects_model->IsSettingsItem(item) || !config || objects_ctrl->multiple_selection())
         return false;
 
@@ -102,7 +112,7 @@ bool ObjectSettings::update_settings_list()
             btn->SetBitmapHover(m_bmp_delete_focus.bmp());
 
 			btn->Bind(wxEVT_BUTTON, [opt_key, config, this](wxEvent &event) {
-                wxGetApp().plater()->take_snapshot(from_u8((boost::format(_utf8(L("Delete Option %s"))) % opt_key).str()));
+                wxGetApp().plater()->take_snapshot(from_u8(boost::format(("Delete Option %s") % opt_key).str()));
 				config->erase(opt_key);
                 wxGetApp().obj_list()->changed_object();
                 wxTheApp->CallAfter([this]() {
@@ -149,7 +159,7 @@ bool ObjectSettings::update_settings_list()
             for (auto& opt : cat.second)
                 optgroup->get_field(opt)->m_on_change = [optgroup](const std::string& opt_id, const boost::any& value) {
                     // first of all take a snapshot and then change value in configuration
-                    wxGetApp().plater()->take_snapshot(from_u8((boost::format(_utf8(L("Change Option %s"))) % opt_id).str()));
+                    wxGetApp().plater()->take_snapshot(from_u8((boost::format("Change Option %s")% opt_id).str()));
                     optgroup->on_change_OG(opt_id, value);
                 };
 
@@ -168,10 +178,77 @@ bool ObjectSettings::update_settings_list()
     {
         objects_ctrl->select_item(objects_model->Delete(item));
         return false;
-    } 
-            
+    }
     return true;
 }
+
+#else
+
+bool ObjectSettings::update_settings_list()
+{
+    if (!wxGetApp().is_editor())
+        return false;
+    if (!wxGetApp().mainframe->IsShown())
+        return false;
+
+    auto objects_ctrl   = wxGetApp().obj_list();
+    auto objects_model  = wxGetApp().obj_list()->GetModel();
+
+    wxDataViewItemArray items;
+    objects_ctrl->GetSelections(items);
+
+    std::map<ObjectBase *, ModelConfig *> object_configs;
+    bool is_object_settings = true;
+    bool is_volume_settings = true;
+    ModelObject * parent_object = nullptr;
+    for (auto item : items) {
+        auto type = objects_model->GetItemType(item);
+        if (type != itObject && type != itVolume) {
+            return false;
+        }
+        const int obj_idx = objects_model->GetObjectIdByItem(item);
+        assert(obj_idx >= 0);
+        auto object = wxGetApp().model().objects[obj_idx];
+        if (type == itObject) {
+            if (!is_object_settings)
+                return false;
+            is_volume_settings = false;
+            object_configs.emplace(object, &object->config);
+        } else {
+            if (!is_volume_settings)
+                return false;
+            if (parent_object && parent_object != object)
+                return false;
+            parent_object = object;
+            is_object_settings = false;
+            const int vol_idx = objects_model->GetVolumeIdByItem(item);
+            assert(vol_idx >= 0);
+            auto volume = object->volumes[vol_idx];
+            object_configs.emplace(volume, &volume->config);
+        }
+    }
+
+    auto tab_object = dynamic_cast<TabPrintModel*>(wxGetApp().get_model_tab());
+    auto tab_volume = dynamic_cast<TabPrintModel*>(wxGetApp().get_model_tab(true));
+
+    if (is_volume_settings == is_object_settings) {
+        tab_object->set_model_config({});
+        tab_volume->set_model_config({});
+        m_tab_active = nullptr;
+    } else if (is_volume_settings) {
+        tab_object->set_model_config({{parent_object, &parent_object->config}});
+        tab_volume->set_model_config(object_configs);
+        m_tab_active = tab_volume;
+    } else if (is_object_settings) {
+        tab_object->set_model_config(object_configs);
+        tab_volume->set_model_config({});
+        m_tab_active = tab_object;
+    }
+    ((ParamsPanel*) tab_object->GetParent())->set_active_tab(nullptr);
+    return true;
+}
+
+#endif
 
 bool ObjectSettings::add_missed_options(ModelConfig* config_to, const DynamicPrintConfig& config_from)
 {
@@ -215,8 +292,11 @@ void ObjectSettings::update_config_values(ModelConfig* config)
         // load checked values from main_config to config
         config->apply_only(main_config, config->keys(), true);
         // Initialize UI components with the config values.
+#if !NEW_OBJECT_SETTING
         for (auto og : m_og_settings)
             og->reload_config();
+#else
+#endif
         // next config check
         update_config_values(config);
 
@@ -230,6 +310,7 @@ void ObjectSettings::update_config_values(ModelConfig* config)
         }
     };
 
+#if !NEW_OBJECT_SETTING
     auto toggle_field = [this](const t_config_option_key & opt_key, bool toggle, int opt_index)
     {
         Field* field = nullptr;
@@ -241,8 +322,15 @@ void ObjectSettings::update_config_values(ModelConfig* config)
         if (field)
             field->toggle(toggle);
     };
+#else
+    auto toggle_field = [this](const t_config_option_key & opt_key, bool toggle, int opt_index)
+    {
+        m_tab_active->toggle_option(opt_key, toggle, opt_index);
+    };
+#endif
 
-    ConfigManipulation config_manipulation(load_config, toggle_field, nullptr, config);
+    //BBS: change local config to DynamicPrintConfig
+    ConfigManipulation config_manipulation(load_config, toggle_field, nullptr, nullptr, &(config->get()));
 
     if (!is_object_settings)
     {
@@ -263,24 +351,32 @@ void ObjectSettings::update_config_values(ModelConfig* config)
 
 void ObjectSettings::UpdateAndShow(const bool show)
 {
+#if !NEW_OBJECT_SETTING
     OG_Settings::UpdateAndShow(show ? update_settings_list() : false);
+#else
+    update_settings_list();
+#endif
 }
 
 void ObjectSettings::msw_rescale()
 {
+#if !NEW_OBJECT_SETTING
     m_bmp_delete.msw_rescale();
     m_bmp_delete_focus.msw_rescale();
 
     for (auto group : m_og_settings)
         group->msw_rescale();
+#endif
 }
 
 void ObjectSettings::sys_color_changed()
 {
+#if !NEW_OBJECT_SETTING
     m_og->sys_color_changed();
 
     for (auto group : m_og_settings)
         group->sys_color_changed();
+#endif
 }
 
 } //namespace GUI

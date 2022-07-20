@@ -4,11 +4,19 @@
 #include <set>
 #include <map>
 #include <string>
-
+#include "nlohmann/json.hpp"
 #include <boost/algorithm/string/trim_all.hpp>
 
 #include "libslic3r/Config.hpp"
 #include "libslic3r/Semver.hpp"
+
+using namespace nlohmann;
+
+#define ENV_DEV_HOST		"0"
+#define ENV_QAT_HOST		"1"
+#define ENV_PRE_HOST		"2"
+#define ENV_PRODUCT_HOST	"3"
+
 
 namespace Slic3r {
 
@@ -21,8 +29,12 @@ public:
 		GCodeViewer
 	};
 
-	explicit AppConfig(EAppMode mode) :
-		m_mode(mode)
+    //BBS: remove GCodeViewer as seperate APP logic
+	explicit AppConfig() :
+		m_dirty(false),
+		m_orig_version(Semver::invalid()),
+		m_mode(EAppMode::Editor),
+		m_legacy_datadir(false)
 	{
 		this->reset();
 	}
@@ -35,13 +47,14 @@ public:
 	// Load the slic3r.ini from a user profile directory (or a datadir, if configured).
 	// return error string or empty strinf
 	std::string         load();
-	// Load from an explicit path.
-	std::string         load(const std::string &path);
 	// Store the slic3r.ini into a user profile directory (or a datadir, if configured).
 	void 			   	save();
 
 	// Does this config need to be saved?
 	bool 				dirty() const { return m_dirty; }
+
+
+	void				set_dirty() { m_dirty = true; }
 
 	// Const accessor, it will return false if a section or a key does not exist.
 	bool get(const std::string &section, const std::string &key, std::string &value) const
@@ -59,7 +72,7 @@ public:
 	std::string 		get(const std::string &section, const std::string &key) const
 		{ std::string value; this->get(section, key, value); return value; }
 	std::string 		get(const std::string &key) const
-		{ std::string value; this->get("", key, value); return value; }
+		{ std::string value; this->get("app", key, value); return value; }
 	void			    set(const std::string &section, const std::string &key, const std::string &value)
 	{
 #ifndef NDEBUG
@@ -76,8 +89,42 @@ public:
 			m_dirty = true;
 		}
 	}
+
+	void			    set_str(const std::string& section, const std::string& key, const std::string& value)
+	{
+#ifndef NDEBUG
+		{
+			std::string key_trimmed = key;
+			boost::trim_all(key_trimmed);
+			assert(key_trimmed == key);
+			assert(!key_trimmed.empty());
+		}
+#endif // NDEBUG
+		std::string& old = m_storage[section][key];
+		if (old != value) {
+			old = value;
+			m_dirty = true;
+		}
+	}
+
+	void				set(const std::string& section, const std::string &key, bool value)
+	{
+		if (value){
+			set(section, key, std::string("true"));
+		} else {
+			set(section, key, std::string("false"));
+		}
+	}
+
+
 	void			    set(const std::string &key, const std::string &value)
-		{ this->set("", key, value);  }
+		{ this->set("app", key, value);  }
+
+	void                set_bool(const std::string &key, const bool &value)
+		{
+			this->set("app", key, value);
+		}
+
 	bool				has(const std::string &section, const std::string &key) const
 	{
 		auto it = m_storage.find(section);
@@ -87,7 +134,7 @@ public:
 		return it2 != it->second.end() && ! it2->second.empty();
 	}
 	bool				has(const std::string &key) const
-		{ return this->has("", key); }
+		{ return this->has("app", key); }
 
 	void				erase(const std::string &section, const std::string &key)
 	{
@@ -114,7 +161,7 @@ public:
 	void 				set_vendors(VendorMap &&vendors) { m_vendors = std::move(vendors); m_dirty = true; }
 	const VendorMap&    vendors() const { return m_vendors; }
 
-	// return recent/skein_directory or recent/config_directory or empty string.
+	// return recent/last_opened_folder or recent/settings_folder or empty string.
 	std::string 		get_last_dir() const;
 	void 				update_config_dir(const std::string &dir);
 	void 				update_skein_dir(const std::string &dir);
@@ -123,6 +170,14 @@ public:
 	//void                update_last_output_dir(const std::string &dir);
 	std::string 		get_last_output_dir(const std::string& alt, const bool removable = false) const;
 	void                update_last_output_dir(const std::string &dir, const bool removable = false);
+
+	// BBS: backup & restore
+	std::string 		get_last_backup_dir() const;
+	void                update_last_backup_dir(const std::string &dir);
+
+	std::string         get_region();
+	std::string         get_country_code();
+    bool				is_engineering_region();
 
 	// reset the current print / filament / printer selections, so that 
 	// the  PresetBundle::load_selections(const AppConfig &config) call will select
@@ -146,6 +201,9 @@ public:
 
 	// Does the config file exist?
 	bool 				exists();
+
+	void                set_loading_path(const std::string& path) { m_loading_path = path; }
+	std::string         loading_path() { return (m_loading_path.empty() ? config_path() : m_loading_path); }
 
     std::vector<std::string> get_recent_projects() const;
     void set_recent_projects(const std::vector<std::string>& recent_projects);
@@ -187,6 +245,7 @@ private:
 	EAppMode													m_mode { EAppMode::Editor };
 	// Map of section, name -> value
 	std::map<std::string, std::map<std::string, std::string>> 	m_storage;
+
 	// Map of enabled vendors / models / variants
 	VendorMap                                                   m_vendors;
 	// Has any value been modified since the config.ini has been last saved or loaded?
@@ -195,6 +254,8 @@ private:
 	Semver                                                      m_orig_version;
 	// Whether the existing version is before system profiles & configuration updating
 	bool                                                        m_legacy_datadir;
+
+	std::string                                                 m_loading_path;
 };
 
 } // namespace Slic3r

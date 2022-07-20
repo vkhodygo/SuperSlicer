@@ -32,6 +32,11 @@ void ExtrusionPath::simplify(double tolerance)
     this->polyline.simplify(tolerance);
 }
 
+void ExtrusionPath::simplify_by_fitting_arc(double tolerance)
+{
+    this->polyline.simplify_by_fitting_arc(tolerance);
+}
+
 double ExtrusionPath::length() const
 {
     return this->polyline.length();
@@ -160,15 +165,23 @@ bool ExtrusionLoop::split_at_vertex(const Point &point)
         if (idx != -1) {
             if (this->paths.size() == 1) {
                 // just change the order of points
-                path->polyline.points.insert(path->polyline.points.end(), path->polyline.points.begin() + 1, path->polyline.points.begin() + idx + 1);
-                path->polyline.points.erase(path->polyline.points.begin(), path->polyline.points.begin() + idx);
+                Polyline p1, p2;
+                path->polyline.split_at_index(idx, &p1, &p2);
+                if (p1.is_valid() && p2.is_valid()) {
+                    p2.append(std::move(p1));
+                    std::swap(path->polyline.points, p2.points);
+                    std::swap(path->polyline.fitting_result, p2.fitting_result);
+                }
             } else {
                 // new paths list starts with the second half of current path
                 ExtrusionPaths new_paths;
+                Polyline p1, p2;
+                path->polyline.split_at_index(idx, &p1, &p2);
                 new_paths.reserve(this->paths.size() + 1);
                 {
                     ExtrusionPath p = *path;
-                    p.polyline.points.erase(p.polyline.points.begin(), p.polyline.points.begin() + idx);
+                    std::swap(p.polyline.points, p2.points);
+                    std::swap(p.polyline.fitting_result, p2.fitting_result);
                     if (p.polyline.is_valid()) new_paths.push_back(p);
                 }
             
@@ -181,7 +194,8 @@ bool ExtrusionLoop::split_at_vertex(const Point &point)
                 // finally we add the first half of current path
                 {
                     ExtrusionPath p = *path;
-                    p.polyline.points.erase(p.polyline.points.begin() + idx + 1, p.polyline.points.end());
+                    std::swap(p.polyline.points, p1.points);
+                    std::swap(p.polyline.fitting_result, p1.fitting_result);
                     if (p.polyline.is_valid()) new_paths.push_back(p);
                 }
                 // we can now override the old path list with the new one and stop looping
@@ -236,18 +250,23 @@ void ExtrusionLoop::split_at(const Point &point, bool prefer_non_overhang)
     
     // now split path_idx in two parts
     const ExtrusionPath &path = this->paths[path_idx];
-    ExtrusionPath p1(path.role(), path.mm3_per_mm, path.width, path.height);
-    ExtrusionPath p2(path.role(), path.mm3_per_mm, path.width, path.height);
+    ExtrusionPath p1(path.overhang_degree, path.curve_degree, path.role(), path.mm3_per_mm, path.width, path.height);
+    ExtrusionPath p2(path.overhang_degree, path.curve_degree, path.role(), path.mm3_per_mm, path.width, path.height);
     path.polyline.split_at(p, &p1.polyline, &p2.polyline);
     
     if (this->paths.size() == 1) {
-        if (! p1.polyline.is_valid())
+        if (!p1.polyline.is_valid()) {
             std::swap(this->paths.front().polyline.points, p2.polyline.points);
-        else if (! p2.polyline.is_valid())
+            std::swap(this->paths.front().polyline.fitting_result, p2.polyline.fitting_result);
+        }
+        else if (!p2.polyline.is_valid()) {
             std::swap(this->paths.front().polyline.points, p1.polyline.points);
+            std::swap(this->paths.front().polyline.fitting_result, p1.polyline.fitting_result);
+        }
         else {
-            p2.polyline.points.insert(p2.polyline.points.end(), p1.polyline.points.begin() + 1, p1.polyline.points.end());
+            p2.polyline.append(std::move(p1.polyline));
             std::swap(this->paths.front().polyline.points, p2.polyline.points);
+            std::swap(this->paths.front().polyline.fitting_result, p2.polyline.fitting_result);
         }
     } else {
         // install the two paths
@@ -314,22 +333,25 @@ double ExtrusionLoop::min_mm3_per_mm() const
 std::string ExtrusionEntity::role_to_string(ExtrusionRole role)
 {
     switch (role) {
-        case erNone                         : return L("Unknown");
-        case erPerimeter                    : return L("Perimeter");
-        case erExternalPerimeter            : return L("External perimeter");
-        case erOverhangPerimeter            : return L("Overhang perimeter");
-        case erInternalInfill               : return L("Internal infill");
-        case erSolidInfill                  : return L("Solid infill");
-        case erTopSolidInfill               : return L("Top solid infill");
+        case erNone                         : return L("Undefined");
+        case erPerimeter                    : return L("Inner wall");
+        case erExternalPerimeter            : return L("Outer wall");
+        case erOverhangPerimeter            : return L("Overhang wall");
+        case erInternalInfill               : return L("Sparse infill");
+        case erSolidInfill                  : return L("Internal solid infill");
+        case erTopSolidInfill               : return L("Top surface");
+        case erBottomSurface                : return L("Bottom surface");
         case erIroning                      : return L("Ironing");
-        case erBridgeInfill                 : return L("Bridge infill");
-        case erGapFill                      : return L("Gap fill");
-        case erSkirt                        : return L("Skirt/Brim");
-        case erSupportMaterial              : return L("Support material");
-        case erSupportMaterialInterface     : return L("Support material interface");
-        case erWipeTower                    : return L("Wipe tower");
+        case erBridgeInfill                 : return L("Bridge");
+        case erGapFill                      : return L("Gap infill");
+        case erSkirt                        : return ("Skirt");
+        case erBrim                         : return ("Brim");
+        case erSupportMaterial              : return L("Support");
+        case erSupportMaterialInterface     : return L("Support interface");
+        case erSupportTransition            : return L("Support transition");
+        case erWipeTower                    : return L("Prime tower");
         case erCustom                       : return L("Custom");
-        case erMixed                        : return L("Mixed");
+        case erMixed                        : return L("Multiple");
         default                             : assert(false);
     }
     return "";
@@ -337,35 +359,41 @@ std::string ExtrusionEntity::role_to_string(ExtrusionRole role)
 
 ExtrusionRole ExtrusionEntity::string_to_role(const std::string_view role)
 {
-    if (role == L("Perimeter"))
+    if (role == L("Inner wall"))
         return erPerimeter;
-    else if (role == L("External perimeter"))
+    else if (role == L("Outer wall"))
         return erExternalPerimeter;
-    else if (role == L("Overhang perimeter"))
+    else if (role == L("Overhang wall"))
         return erOverhangPerimeter;
-    else if (role == L("Internal infill"))
+    else if (role == L("Sparse infill"))
         return erInternalInfill;
-    else if (role == L("Solid infill"))
+    else if (role == L("Internal solid infill"))
         return erSolidInfill;
-    else if (role == L("Top solid infill"))
+    else if (role == L("Top surface"))
         return erTopSolidInfill;
+    else if (role == L("Bottom surface"))
+        return erBottomSurface;
     else if (role == L("Ironing"))
         return erIroning;
-    else if (role == L("Bridge infill"))
+    else if (role == L("Bridge"))
         return erBridgeInfill;
-    else if (role == L("Gap fill"))
+    else if (role == L("Gap infill"))
         return erGapFill;
-    else if (role == L("Skirt") || role == L("Skirt/Brim")) // "Skirt" is for backward compatibility with 2.3.1 and earlier
+    else if (role == ("Skirt"))
         return erSkirt;
-    else if (role == L("Support material"))
+    else if (role == ("Brim"))
+        return erBrim;
+    else if (role == L("Support"))
         return erSupportMaterial;
-    else if (role == L("Support material interface"))
+    else if (role == L("Support interface"))
         return erSupportMaterialInterface;
-    else if (role == L("Wipe tower"))
+    else if (role == L("Support transition"))
+        return erSupportTransition;
+    else if (role == L("Prime tower"))
         return erWipeTower;
     else if (role == L("Custom"))
         return erCustom;
-    else if (role == L("Mixed"))
+    else if (role == L("Multiple"))
         return erMixed;
     else
         return erNone;

@@ -5,7 +5,6 @@
 #include "GLCanvas3D.hpp"
 #include "GUI_App.hpp"
 #include "GUI.hpp"
-#include "GUI_ObjectManipulation.hpp"
 #include "GUI_ObjectList.hpp"
 #include "Gizmos/GLGizmoBase.hpp"
 #include "Camera.hpp"
@@ -107,6 +106,7 @@ const ModelObjectPtrs& Selection::Clipboard::get_objects() const
     return m_model->objects;
 }
 
+
 Selection::Selection()
     : m_volumes(nullptr)
     , m_model(nullptr)
@@ -152,8 +152,11 @@ void Selection::add(unsigned int volume_idx, bool as_single_selection, bool chec
         return;
 
     const GLVolume* volume = (*m_volumes)[volume_idx];
+    //BBS: multiple wipe tower case should be considered
     // wipe tower is already selected
-    if (is_wipe_tower() && volume->is_wipe_tower)
+    //if (is_wipe_tower() && volume->is_wipe_tower)
+    //    return;
+    if (!m_list.empty() && !is_wipe_tower() && volume->is_wipe_tower && !as_single_selection)
         return;
 
     bool keep_instance_mode = (m_mode == Instance) && !as_single_selection;
@@ -165,15 +168,26 @@ void Selection::add(unsigned int volume_idx, bool as_single_selection, bool chec
     needs_reset |= is_wipe_tower() && !volume->is_wipe_tower;
     needs_reset |= as_single_selection && !is_any_modifier() && volume->is_modifier;
     needs_reset |= is_any_modifier() && !volume->is_modifier;
+    if (!needs_reset && (is_any_modifier() || is_any_volume())) {
+        int obj_index = volume->object_idx();
+        int inst_index = volume->instance_idx();
+        int first = *(m_list.begin());
+        if (first < m_volumes->size()) {
+            const GLVolume* volume = (*m_volumes)[first];
+            if ((volume->object_idx() != obj_index) || (volume->instance_idx() != inst_index))
+                needs_reset = true;
+        }
+    }
 
     if (!already_contained || needs_reset) {
-        wxGetApp().plater()->take_snapshot(_L("Selection-Add"), UndoRedo::SnapshotType::Selection);
+        wxGetApp().plater()->take_snapshot(std::string("Selection-Add!"), UndoRedo::SnapshotType::Selection);
 
         if (needs_reset)
             clear();
 
+        // BBS
         if (!keep_instance_mode)
-            m_mode = volume->is_modifier ? Volume : Instance;
+            m_mode = volume->is_modifier ? Volume : m_volume_selection_mode;
     }
     else
       // keep current mode
@@ -208,7 +222,7 @@ void Selection::remove(unsigned int volume_idx)
     if (!contains_volume(volume_idx))
         return;
 
-    wxGetApp().plater()->take_snapshot(_L("Selection-Remove"), UndoRedo::SnapshotType::Selection);
+    wxGetApp().plater()->take_snapshot(std::string("Selection-Remove!"), UndoRedo::SnapshotType::Selection);
 
     GLVolume* volume = (*m_volumes)[volume_idx];
 
@@ -240,7 +254,7 @@ void Selection::add_object(unsigned int object_idx, bool as_single_selection)
         (as_single_selection && matches(volume_idxs)))
         return;
 
-    wxGetApp().plater()->take_snapshot(_L("Selection-Add Object"), UndoRedo::SnapshotType::Selection);
+    wxGetApp().plater()->take_snapshot(std::string("Selection-Add Object"), UndoRedo::SnapshotType::Selection);
 
     // resets the current list if needed
     if (as_single_selection)
@@ -259,7 +273,7 @@ void Selection::remove_object(unsigned int object_idx)
     if (!m_valid)
         return;
 
-    wxGetApp().plater()->take_snapshot(_L("Selection-Remove Object"), UndoRedo::SnapshotType::Selection);
+    wxGetApp().plater()->take_snapshot(std::string("Selection-Remove Object"), UndoRedo::SnapshotType::Selection);
 
     do_remove_object(object_idx);
 
@@ -277,7 +291,7 @@ void Selection::add_instance(unsigned int object_idx, unsigned int instance_idx,
         (as_single_selection && matches(volume_idxs)))
         return;
 
-    wxGetApp().plater()->take_snapshot(_L("Selection-Add Instance"), UndoRedo::SnapshotType::Selection);
+    wxGetApp().plater()->take_snapshot(std::string("Selection-Add Instance"), UndoRedo::SnapshotType::Selection);
 
     // resets the current list if needed
     if (as_single_selection)
@@ -296,7 +310,7 @@ void Selection::remove_instance(unsigned int object_idx, unsigned int instance_i
     if (!m_valid)
         return;
 
-    wxGetApp().plater()->take_snapshot(_L("Selection-Remove Instance"), UndoRedo::SnapshotType::Selection);
+    wxGetApp().plater()->take_snapshot(std::string("Selection-Remove Instance"), UndoRedo::SnapshotType::Selection);
 
     do_remove_instance(object_idx, instance_idx);
 
@@ -379,6 +393,97 @@ void Selection::remove_volumes(EMode mode, const std::vector<unsigned int>& volu
     this->set_bounding_boxes_dirty();
 }
 
+void Selection::add_curr_plate()
+{
+    if (!m_valid)
+        return;
+
+    wxGetApp().plater()->take_snapshot(std::string("Selection-Add Curr Plate All!"));
+    m_mode = Instance;
+    clear();
+
+    PartPlate* plate = wxGetApp().plater()->get_partplate_list().get_curr_plate();
+    for (int obj_idx = 0; obj_idx < m_model->objects.size(); obj_idx++) {
+        if (plate && plate->contain_instance_totally(obj_idx, 0)) {
+            std::vector<unsigned int> volume_idxs = get_volume_idxs_from_object(obj_idx);
+            do_add_volumes(volume_idxs);
+        }
+    }
+
+    update_type();
+    this->set_bounding_boxes_dirty();
+}
+
+void Selection::remove_curr_plate()
+{
+    if (!m_valid)
+        return;
+
+    PartPlate* plate = wxGetApp().plater()->get_partplate_list().get_curr_plate();
+    if (plate->empty())
+        return;
+
+    wxGetApp().plater()->take_snapshot(std::string("Selection-Delete Curr Plate All"));
+    m_mode = Instance;
+    clear();
+
+    for (int obj_idx = 0; obj_idx < m_model->objects.size(); obj_idx++) {
+        if (plate && plate->contain_instance_totally(obj_idx, 0)) {
+            std::vector<unsigned int> volume_idxs = get_volume_idxs_from_object(obj_idx);
+            do_add_volumes(volume_idxs);
+        }
+    }
+
+    update_type();
+    this->set_bounding_boxes_dirty();
+
+    erase();
+}
+
+void Selection::clone(int numbers)
+{
+    if (numbers > 0)
+        wxGetApp().plater()->take_snapshot(std::string("Selection-clone!"));
+    for (int i = 0; i < numbers; i++) {
+        copy_to_clipboard();
+        paste_from_clipboard();
+    }
+}
+
+//BBS
+void Selection::set_printable(bool printable)
+{
+    if (!m_valid)
+        return;
+
+    std::set<std::pair<int, int>> instances_idxs;
+    for (ObjectIdxsToInstanceIdxsMap::iterator obj_it = m_cache.content.begin(); obj_it != m_cache.content.end(); ++obj_it)
+    {
+        for (InstanceIdxsList::reverse_iterator inst_it = obj_it->second.rbegin(); inst_it != obj_it->second.rend(); ++inst_it)
+        {
+            instances_idxs.insert(std::make_pair(obj_it->first, *inst_it));
+        }
+    }
+
+    std::string snapshot_text = (boost::format("%1%") % (printable ? "Set Selection Printable" : "Set Selection Unprintable")).str();
+    wxGetApp().plater()->take_snapshot(snapshot_text);
+
+    // set printable value for all instances in object
+    for (const std::pair<int, int>& i : instances_idxs)
+    {
+        ModelObject* object = m_model->objects[i.first];
+        for (auto inst : object->instances)
+            inst->printable = printable;
+        wxGetApp().obj_list()->update_printable_state(i.first, i.second);
+
+        //update printable state on canvas
+        wxGetApp().plater()->canvas3D()->update_instance_printable_state_for_object((size_t)i.first);
+    }
+
+    // update scene
+    wxGetApp().plater()->update();
+}
+
 void Selection::add_all()
 {
     if (!m_valid)
@@ -392,8 +497,8 @@ void Selection::add_all()
 
     if ((unsigned int)m_list.size() == count)
         return;
-    
-    wxGetApp().plater()->take_snapshot(_(L("Selection-Add All")), UndoRedo::SnapshotType::Selection);
+
+    wxGetApp().plater()->take_snapshot(std::string("Selection-Add All!"), UndoRedo::SnapshotType::Selection);
 
     m_mode = Instance;
     clear();
@@ -414,11 +519,11 @@ void Selection::remove_all()
 
     if (is_empty())
         return;
-  
+
 // Not taking the snapshot with non-empty Redo stack will likely be more confusing than losing the Redo stack.
 // Let's wait for user feedback.
 //    if (!wxGetApp().plater()->can_redo())
-        wxGetApp().plater()->take_snapshot(_L("Selection-Remove All"), UndoRedo::SnapshotType::Selection);
+        wxGetApp().plater()->take_snapshot(std::string("Selection-Remove All!"), UndoRedo::SnapshotType::Selection);
 
     m_mode = Instance;
     clear();
@@ -473,12 +578,15 @@ void Selection::clear()
     update_type();
     set_bounding_boxes_dirty();
 
+    // BBS
+#if 0
     // this happens while the application is closing
     if (wxGetApp().obj_manipul() == nullptr)
         return;
 
     // resets the cache in the sidebar
     wxGetApp().obj_manipul()->reset_cache();
+#endif
 
     // #et_FIXME fake KillFocus from sidebar
     wxGetApp().plater()->canvas3D()->handle_sidebar_focus_event("", false);
@@ -704,10 +812,38 @@ void Selection::translate(const Vec3d& displacement, bool local)
         return;
 
     EMode translation_type = m_mode;
+    //BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": %1%, displacement {%2%, %3%, %4%}") % __LINE__ % displacement(X) % displacement(Y) % displacement(Z);
 
     for (unsigned int i : m_list) {
         GLVolume& v = *(*m_volumes)[i];
-        if (m_mode == Volume || v.is_wipe_tower) {
+        if (v.is_wipe_tower) {
+            int plate_idx = v.object_idx() - 1000;
+            BoundingBoxf3 plate_bbox = wxGetApp().plater()->get_partplate_list().get_plate(plate_idx)->get_bounding_box();
+            Vec3d tower_size = v.bounding_box().size();
+            Vec3d tower_origin = m_cache.volumes_data[i].get_volume_position();
+            Vec3d actual_displacement = displacement;
+            const double margin = 15.f;
+
+            if (!local)
+                actual_displacement = (m_cache.volumes_data[i].get_instance_rotation_matrix() * m_cache.volumes_data[i].get_instance_scale_matrix() * m_cache.volumes_data[i].get_instance_mirror_matrix()).inverse() * displacement;
+
+            if (tower_origin(0) + actual_displacement(0) - margin < plate_bbox.min(0)) {
+                actual_displacement(0) = plate_bbox.min(0) - tower_origin(0) + margin;
+            }
+            else if (tower_origin(0) + actual_displacement(0) + tower_size(0) + margin > plate_bbox.max(0)) {
+                actual_displacement(0) = plate_bbox.max(0) - tower_origin(0) - tower_size(0) - margin;
+            }
+
+            if (tower_origin(1) + actual_displacement(1) - margin < plate_bbox.min(1)) {
+                actual_displacement(1) = plate_bbox.min(1) - tower_origin(1) + margin;
+            }
+            else if (tower_origin(1) + actual_displacement(1) + tower_size(1) + margin > plate_bbox.max(1)) {
+                actual_displacement(1) = plate_bbox.max(1) - tower_origin(1) - tower_size(1) - margin;
+            }
+
+            v.set_volume_offset(m_cache.volumes_data[i].get_volume_position() + actual_displacement);
+        }
+        else if (m_mode == Volume || v.is_wipe_tower) {
             if (local)
                 v.set_volume_offset(m_cache.volumes_data[i].get_volume_position() + displacement);
             else {
@@ -862,16 +998,26 @@ void Selection::flattening_rotate(const Vec3d& normal)
     if (!m_valid)
         return;
 
+    // BBS: show the normal for debug
+    std::stringstream ss;
+    ss << std::fixed << std::setprecision(4) << ": " << (-normal).transpose();
+    wxGetApp().plater()->show_status_message("place on face -normal: "+ss.str());
+    BOOST_LOG_TRIVIAL(debug) <<"flattening_rotate at "<<__FILE__<<":"<<__LINE__ << std::fixed << std::setprecision(4) << ": " << normal.transpose();
+    flush_logs();
+
     for (unsigned int i : m_list) {
         GLVolume& v = *(*m_volumes)[i];
         // Normal transformed from the object coordinate space to the world coordinate space.
         const auto &voldata = m_cache.volumes_data[i];
         Vec3d tnormal = (Geometry::assemble_transform(
-            Vec3d::Zero(), voldata.get_instance_rotation(), 
+            Vec3d::Zero(), voldata.get_instance_rotation(),
             voldata.get_instance_scaling_factor().cwiseInverse(), voldata.get_instance_mirror()) * normal).normalized();
         // Additional rotation to align tnormal with the down vector in the world coordinate space.
         auto  extra_rotation = Eigen::Quaterniond().setFromTwoVectors(tnormal, - Vec3d::UnitZ());
         v.set_instance_rotation(Geometry::extract_euler_angles(extra_rotation.toRotationMatrix() * m_cache.volumes_data[i].get_instance_rotation_matrix()));
+
+        BOOST_LOG_TRIVIAL(debug) << "flattening_rotate " << (*m_volumes)[i]->name << std::fixed << std::setprecision(4) << ": tnormal=" << tnormal.transpose() << "; extra_rotation=" << Geometry::extract_euler_angles(extra_rotation.toRotationMatrix()).transpose();
+        flush_logs();
     }
 
 #if !DISABLE_INSTANCES_SYNCH
@@ -958,7 +1104,7 @@ void Selection::scale_to_fit_print_volume(const BuildVolume& volume)
         if (s <= 0.0 || s == 1.0)
             return;
 
-        wxGetApp().plater()->take_snapshot(_L("Scale To Fit"));
+        wxGetApp().plater()->take_snapshot(std::string("Scale To Fit"));
 
         TransformationType type;
         type.set_world();
@@ -976,7 +1122,8 @@ void Selection::scale_to_fit_print_volume(const BuildVolume& volume)
         translate(offset);
         wxGetApp().plater()->canvas3D()->do_move(""); // avoid storing another snapshot
 
-        wxGetApp().obj_manipul()->set_dirty();
+        // BBS
+        //wxGetApp().obj_manipul()->set_dirty();
     };
 
     auto fit_rectangle = [this, fit](const BuildVolume& volume) {
@@ -1022,10 +1169,10 @@ void Selection::scale_to_fit_print_volume(const BuildVolume& volume)
         if (circle_radius == 0.0 || max_z == 0.0)
             return;
 
-        const double s = std::min(print_circle_radius / circle_radius, volume.max_print_height() / max_z);
+        const double s = std::min(print_circle_radius / circle_radius, volume.printable_height() / max_z);
         const Vec3d sel_center = get_bounding_box().center();
         const Vec3d offset = s * (Vec3d(unscale<double>(circle.center.x()), unscale<double>(circle.center.y()), 0.5 * max_z) - sel_center);
-        const Vec3d print_center = { unscale<double>(print_circle.center.x()), unscale<double>(print_circle.center.y()), 0.5 * volume.max_print_height() };
+        const Vec3d print_center = { unscale<double>(print_circle.center.x()), unscale<double>(print_circle.center.y()), 0.5 * volume.printable_height() };
         fit(s, print_center - (sel_center + offset));
     };
 
@@ -1048,10 +1195,10 @@ void Selection::scale_to_fit_print_volume(const DynamicPrintConfig& config)
     // adds 1/100th of a mm on all sides to avoid false out of print volume detections due to floating-point roundings
     Vec3d box_size = get_bounding_box().size() + 0.01 * Vec3d::Ones();
 
-    const ConfigOptionPoints* opt = dynamic_cast<const ConfigOptionPoints*>(config.option("bed_shape"));
+    const ConfigOptionPoints* opt = dynamic_cast<const ConfigOptionPoints*>(config.option("printable_area"));
     if (opt != nullptr) {
         BoundingBox bed_box_2D = get_extents(Polygon::new_scale(opt->values));
-        BoundingBoxf3 print_volume({ unscale<double>(bed_box_2D.min(0)), unscale<double>(bed_box_2D.min(1)), 0.0 }, { unscale<double>(bed_box_2D.max(0)), unscale<double>(bed_box_2D.max(1)), config.opt_float("max_print_height") });
+        BoundingBoxf3 print_volume({ unscale<double>(bed_box_2D.min(0)), unscale<double>(bed_box_2D.min(1)), 0.0 }, { unscale<double>(bed_box_2D.max(0)), unscale<double>(bed_box_2D.max(1)), config.opt_float("printable_height") });
         Vec3d print_volume_size = print_volume.size();
         double sx = (box_size(0) != 0.0) ? print_volume_size(0) / box_size(0) : 0.0;
         double sy = (box_size(1) != 0.0) ? print_volume_size(1) / box_size(1) : 0.0;
@@ -1060,7 +1207,7 @@ void Selection::scale_to_fit_print_volume(const DynamicPrintConfig& config)
         {
             double s = std::min(sx, std::min(sy, sz));
             if (s != 1.0) {
-                wxGetApp().plater()->take_snapshot(_L("Scale To Fit"));
+                wxGetApp().plater()->take_snapshot("Scale To Fit");
 
                 TransformationType type;
                 type.set_world();
@@ -1077,7 +1224,8 @@ void Selection::scale_to_fit_print_volume(const DynamicPrintConfig& config)
                 translate(print_volume.center() - get_bounding_box().center());
                 wxGetApp().plater()->canvas3D()->do_move(""); // avoid storing another snapshot
 
-                wxGetApp().obj_manipul()->set_dirty();
+                // BBS
+                //wxGetApp().obj_manipul()->set_dirty();
             }
         }
     }
@@ -1112,6 +1260,8 @@ void Selection::translate(unsigned int object_idx, const Vec3d& displacement)
     if (!m_valid)
         return;
 
+    //BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": obj %1%") % object_idx;
+    //BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": %1%, displacement {%2%, %3%, %4%}") % __LINE__ % displacement(X) % displacement(Y) % displacement(Z);
     for (unsigned int i : m_list) {
         GLVolume& v = *(*m_volumes)[i];
         if (v.object_idx() == (int)object_idx)
@@ -1154,6 +1304,8 @@ void Selection::translate(unsigned int object_idx, unsigned int instance_idx, co
     if (!m_valid)
         return;
 
+    //BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": obj %1%, instance %2%") % object_idx % instance_idx;
+    //BOOST_LOG_TRIVIAL(debug) << __FUNCTION__ << boost::format(": %1%, displacement {%2%, %3%, %4%}") % __LINE__ % displacement(X) % displacement(Y) % displacement(Z);
     for (unsigned int i : m_list) {
         GLVolume& v = *(*m_volumes)[i];
         if (v.object_idx() == (int)object_idx && v.instance_idx() == (int)instance_idx)
@@ -1189,6 +1341,57 @@ void Selection::translate(unsigned int object_idx, unsigned int instance_idx, co
     }
 
     this->set_bounding_boxes_dirty();
+}
+
+//BBS: add partplate related logic
+void Selection::notify_instance_update(int object_idx, int instance_idx)
+{
+    //BBS: notify instance updates to part plater list
+    PartPlateList& plate_list = wxGetApp().plater()->get_partplate_list();
+
+    if (object_idx == -1)
+    {
+        std::set<std::pair<int, int>> notify_set;
+        for (unsigned int i : m_list)
+        {
+            int obj_index = (*m_volumes)[i]->object_idx();
+            //-1 means all the instance in this object
+            if (instance_idx == -1)
+            {
+                ModelObject* object = m_model->objects[obj_index];
+
+                for (int instance_index = 0; instance_index < object->instances.size(); instance_index++)
+                {
+                    std::pair<int, int> notify_index(obj_index, instance_index);
+                    if (notify_set.find(notify_index) == notify_set.end()) {
+                        plate_list.notify_instance_update(obj_index, instance_index);
+                        notify_set.insert(notify_index);
+                    }
+                }
+            }
+            else {
+                std::pair<int, int> notify_index(obj_index, instance_idx);
+                if (notify_set.find(notify_index) == notify_set.end()) {
+                    plate_list.notify_instance_update(obj_index, instance_idx);
+                    notify_set.insert(notify_index);
+                }
+            }
+        }
+    }
+    else
+    {
+        if (instance_idx == -1)
+        {
+            ModelObject* object = m_model->objects[object_idx];
+
+            for (int index = 0; index < object->instances.size(); index++)
+            {
+                plate_list.notify_instance_update(object_idx, index);
+            }
+        }
+        else
+            plate_list.notify_instance_update(object_idx, instance_idx);
+    }
 }
 
 void Selection::erase()
@@ -1326,7 +1529,9 @@ void Selection::render_center(bool gizmo_is_dragging) const
 }
 #endif // ENABLE_RENDER_SELECTION_CENTER
 
-void Selection::render_sidebar_hints(const std::string& sidebar_field) const
+//BBS: GUI refactor, add uniform scale from gizmo
+void Selection::render_sidebar_hints(const std::string& sidebar_field, bool uniform_scale) const
+//void Selection::render_sidebar_hints(const std::string& sidebar_field) const
 {
     if (sidebar_field.empty())
         return;
@@ -1349,7 +1554,8 @@ void Selection::render_sidebar_hints(const std::string& sidebar_field) const
     if (!boost::starts_with(sidebar_field, "layer")) {
         const Vec3d& center = get_bounding_box().center();
 
-        if (is_single_full_instance() && !wxGetApp().obj_manipul()->get_world_coordinates()) {
+        // BBS
+        if (is_single_full_instance()/* && !wxGetApp().obj_manipul()->get_world_coordinates()*/) {
             glsafe(::glTranslated(center(0), center(1), center(2)));
             if (!boost::starts_with(sidebar_field, "position")) {
                 Transform3d orient_matrix = Transform3d::Identity();
@@ -1390,7 +1596,8 @@ void Selection::render_sidebar_hints(const std::string& sidebar_field) const
     else if (boost::starts_with(sidebar_field, "rotation"))
         render_sidebar_rotation_hints(sidebar_field);
     else if (boost::starts_with(sidebar_field, "scale") || boost::starts_with(sidebar_field, "size"))
-        render_sidebar_scale_hints(sidebar_field);
+        //BBS: GUI refactor: add uniform_scale from gizmo
+        render_sidebar_scale_hints(sidebar_field, uniform_scale);
     else if (boost::starts_with(sidebar_field, "layer"))
         render_sidebar_layers_hints(sidebar_field);
 
@@ -1403,6 +1610,12 @@ void Selection::render_sidebar_hints(const std::string& sidebar_field) const
 bool Selection::requires_local_axes() const
 {
     return (m_mode == Volume) && is_from_single_instance();
+}
+
+void Selection::cut_to_clipboard()
+{
+    copy_to_clipboard();
+    erase();
 }
 
 void Selection::copy_to_clipboard()
@@ -1475,6 +1688,30 @@ void Selection::paste_from_clipboard()
         break;
     }
     }
+}
+
+//BBS get export mesh for exporting stl
+std::set<std::pair<int, int>> Selection::get_selected_object_instances()
+{
+    std::set<std::pair<int, int>> instances_idxs;
+    // BBS only support multi full object now
+    if (!is_multiple_full_object())
+        return instances_idxs;
+
+    for (ObjectIdxsToInstanceIdxsMap::iterator obj_it = m_cache.content.begin(); obj_it != m_cache.content.end(); ++obj_it)
+    {
+        for (InstanceIdxsList::reverse_iterator inst_it = obj_it->second.rbegin(); inst_it != obj_it->second.rend(); ++inst_it)
+        {
+            instances_idxs.insert(std::make_pair(obj_it->first, *inst_it));
+        }
+    }
+
+    return instances_idxs;
+}
+
+void Selection::fill_color(int extruder_id)
+{
+    wxGetApp().obj_list()->set_extruder_for_selected_items(extruder_id);
 }
 
 std::vector<unsigned int> Selection::get_volume_idxs_from_object(unsigned int object_idx) const
@@ -1686,12 +1923,13 @@ void Selection::update_type()
         }
     }
 
-    int object_idx = get_object_idx();
+    //BBS: remove the disable logic here
+    /*int object_idx = get_object_idx();
     int instance_idx = get_instance_idx();
     for (GLVolume* v : *m_volumes)
     {
         v->disabled = requires_disable ? (v->object_idx() != object_idx) || (v->instance_idx() != instance_idx) : false;
-    }
+    }*/
 
 #if ENABLE_SELECTION_DEBUG_OUTPUT
     std::cout << "Selection: ";
@@ -1921,7 +2159,10 @@ void Selection::render_bounding_box(const BoundingBoxf3& box, float* color) cons
 
 static std::array<float, 4> get_color(Axis axis)
 {
-    return { AXES_COLOR[axis][0], AXES_COLOR[axis][1], AXES_COLOR[axis][2], AXES_COLOR[axis][3] };
+    return { GLGizmoBase::AXES_COLOR[axis][0],
+            GLGizmoBase::AXES_COLOR[axis][1],
+            GLGizmoBase::AXES_COLOR[axis][2],
+            GLGizmoBase::AXES_COLOR[axis][3] };
 };
 
 void Selection::render_sidebar_position_hints(const std::string& sidebar_field) const
@@ -1966,9 +2207,12 @@ void Selection::render_sidebar_rotation_hints(const std::string& sidebar_field) 
     }
 }
 
-void Selection::render_sidebar_scale_hints(const std::string& sidebar_field) const
+//BBS: GUI refactor: add gizmo uniform_scale
+void Selection::render_sidebar_scale_hints(const std::string& sidebar_field, bool gizmo_uniform_scale) const
 {
-    bool uniform_scale = requires_uniform_scale() || wxGetApp().obj_manipul()->get_uniform_scaling();
+    // BBS
+    //bool uniform_scale = requires_uniform_scale() || wxGetApp().obj_manipul()->get_uniform_scaling();
+    bool uniform_scale = requires_uniform_scale() || gizmo_uniform_scale;
 
     auto render_sidebar_scale_hint = [this, uniform_scale](Axis axis) {
         const_cast<GLModel*>(&m_arrow)->set_color(-1, uniform_scale ? UNIFORM_SCALE_COLOR : get_color(axis));
@@ -2101,7 +2345,7 @@ static void verify_instances_rotation_synchronized(const Model &model, const GLV
                 break;
             }
         }
-        assert(idx_volume_first != -1); // object without instances?
+        //assert(idx_volume_first != -1); // object without instances?
         if (idx_volume_first == -1)
             continue;
         const Vec3d &rotation0 = volumes[idx_volume_first]->get_instance_rotation();
@@ -2212,7 +2456,7 @@ void Selection::ensure_on_bed()
 
     for (size_t i = 0; i < m_volumes->size(); ++i) {
         GLVolume* volume = (*m_volumes)[i];
-        if (!volume->is_wipe_tower && !volume->is_modifier && 
+        if (!volume->is_wipe_tower && !volume->is_modifier &&
             std::find(m_cache.sinking_volumes.begin(), m_cache.sinking_volumes.end(), i) == m_cache.sinking_volumes.end()) {
             const double min_z = volume->transformed_convex_hull_bounding_box().min.z();
             std::pair<int, int> instance = std::make_pair(volume->object_idx(), volume->instance_idx());
@@ -2374,12 +2618,17 @@ void Selection::paste_objects_from_clipboard()
     for (const ModelObject* src_object : src_objects)
     {
         ModelObject* dst_object = m_model->add_object(*src_object);
-        double offset = wxGetApp().plater()->canvas3D()->get_size_proportional_to_max_bed_size(0.05);
-        Vec3d displacement(offset, offset, 0.0);
+
+        // BBS: find an empty cell to put the copied object
+        BoundingBoxf3 bbox = src_object->instance_convex_hull_bounding_box(0);
+        PartPlate* plate = wxGetApp().plater()->get_partplate_list().get_curr_plate();
+        bool in_current = plate->intersects(bbox);
+
+        auto start_point = in_current?src_object->instances.front()->get_offset():plate->get_build_volume().center();
+        auto empty_cell = wxGetApp().plater()->canvas3D()->get_nearest_empty_cell({start_point(0), start_point(1)});
+        Vec3d displacement = { empty_cell.x(),empty_cell.y(),start_point(2) };
         for (ModelInstance* inst : dst_object->instances)
-        {
-            inst->set_offset(inst->get_offset() + displacement);
-        }
+            inst->set_offset(displacement);
 
         object_idxs.push_back(m_model->objects.size() - 1);
 #ifdef _DEBUG

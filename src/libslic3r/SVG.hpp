@@ -39,6 +39,7 @@ public:
         { return open(filename.c_str()); }
     bool open(const std::string &filename, const BoundingBox &bbox, const coord_t bbox_offset = scale_(1.), bool flipY = true)
         { return open(filename.c_str(), bbox, bbox_offset, flipY); }
+    bool is_opened() { return f != NULL; }
 
     void draw(const Line &line, std::string stroke = "black", coordf_t stroke_width = 0);
     void draw(const ThickLine &line, const std::string &fill, const std::string &stroke, coordf_t stroke_width = 0);
@@ -72,8 +73,11 @@ public:
     void draw(const ClipperLib::Path  &polygon, double scale, std::string fill = "grey", coordf_t stroke_width = 0);
     void draw(const ClipperLib::Paths &polygons, double scale, std::string fill = "grey", coordf_t stroke_width = 0);
 
-    void draw_text(const Point &pt, const char *text, const char *color);
+    void draw_text(const Point &pt, const char *text, const char *color, int font_size = 20);
     void draw_legend(const Point &pt, const char *text, const char *color);
+    //BBS
+    void draw_grid(const BoundingBox& bbox, const std::string& stroke = "black", coordf_t stroke_width = scale_(0.05), coordf_t step=scale_(1.0));
+    void add_comment(const std::string comment);
 
     void Close();
     

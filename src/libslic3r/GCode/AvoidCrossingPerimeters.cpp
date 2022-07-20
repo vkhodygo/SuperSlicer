@@ -705,7 +705,7 @@ static bool need_wipe(const GCode          &gcodegen,
 {
     const ExPolygons               &lslices        = gcodegen.layer()->lslices;
     const std::vector<BoundingBox> &lslices_bboxes = gcodegen.layer()->lslices_bboxes;
-    bool z_lift_enabled = gcodegen.config().retract_lift.get_at(gcodegen.writer().extruder()->id()) > 0.;
+    bool z_lift_enabled = gcodegen.config().z_hop.get_at(gcodegen.writer().extruder()->id()) > 0.;
     bool wipe_needed    = false;
 
     // If the original unmodified path doesn't have any intersection with boundary, then it is entirely inside the object otherwise is entirely
@@ -1135,7 +1135,8 @@ Polyline AvoidCrossingPerimeters::travel_to(const GCode &gcodegen, const Point &
 
     const ExPolygons               &lslices          = gcodegen.layer()->lslices;
     const std::vector<BoundingBox> &lslices_bboxes   = gcodegen.layer()->lslices_bboxes;
-    bool                            is_support_layer = dynamic_cast<const SupportLayer *>(gcodegen.layer()) != nullptr;
+    bool                            is_support_layer = (dynamic_cast<const SupportLayer *>(gcodegen.layer()) != nullptr) ||
+                                                       (dynamic_cast<const TreeSupportLayer *>(gcodegen.layer()) != nullptr);
     if (!use_external && (is_support_layer || (!lslices.empty() && !any_expolygon_contains(lslices, lslices_bboxes, m_grid_lslice, travel)))) {
         // Initialize m_internal only when it is necessary.
         if (m_internal.boundaries.empty())
@@ -1166,14 +1167,12 @@ Polyline AvoidCrossingPerimeters::travel_to(const GCode &gcodegen, const Point &
         travel_intersection_count = 0;
     }
 
-    const ConfigOptionFloatOrPercent &opt_max_detour             = gcodegen.config().avoid_crossing_perimeters_max_detour;
+    const ConfigOptionFloat &opt_max_detour             = gcodegen.config().max_travel_detour_distance;
     bool                              max_detour_length_exceeded = false;
     if (opt_max_detour.value > 0) {
         double direct_length     = travel.length();
         double detour            = result_pl.length() - direct_length;
-        double max_detour_length = opt_max_detour.percent ?
-            direct_length * 0.01 * opt_max_detour.value :
-            scale_(opt_max_detour.value);
+        double max_detour_length = scale_(opt_max_detour.value);
         if (detour > max_detour_length) {
             result_pl = {start, end};
             max_detour_length_exceeded = true;
@@ -1442,7 +1441,7 @@ Polyline AvoidCrossingPerimeters::travel_to(const GCode &gcodegen, const Point &
     }
 
     Line travel(start, end);
-    double max_detour_length scale_(gcodegen.config().avoid_crossing_perimeters_max_detour);
+    double max_detour_length scale_(gcodegen.config().max_travel_detour_distance);
     if (max_detour_length > 0 && (result_pl.length() - travel.length()) > max_detour_length)
         result_pl = {start, end};
 

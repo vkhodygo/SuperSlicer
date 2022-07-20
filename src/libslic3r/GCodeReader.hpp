@@ -45,9 +45,10 @@ public:
             return sqrt(x*x + y*y);
         }
         bool cmd_is(const char *cmd_test)          const { return cmd_is(m_raw, cmd_test); }
-        bool extruding(const GCodeReader &reader)  const { return this->cmd_is("G1") && this->dist_E(reader) > 0; }
-        bool retracting(const GCodeReader &reader) const { return this->cmd_is("G1") && this->dist_E(reader) < 0; }
-        bool travel()     const { return this->cmd_is("G1") && ! this->has(E); }
+        //BBS: modify to support G2 and G3
+        bool extruding(const GCodeReader &reader)  const { return (this->cmd_is("G1") || this->cmd_is("G2") || this->cmd_is("G3")) && this->dist_E(reader) > 0; }
+        bool retracting(const GCodeReader &reader) const { return (this->cmd_is("G1") || this->cmd_is("G2") || this->cmd_is("G3")) && this->dist_E(reader) < 0; }
+        bool travel()     const { return (this->cmd_is("G1") || this->cmd_is("G2") || this->cmd_is("G3")) && ! this->has(E); }
         void set(const GCodeReader &reader, const Axis axis, const float new_value, const int decimal_digits = 3);
 
         bool  has_x() const { return this->has(X); }
@@ -55,12 +56,21 @@ public:
         bool  has_z() const { return this->has(Z); }
         bool  has_e() const { return this->has(E); }
         bool  has_f() const { return this->has(F); }
+        // BBS: add I J P axis
+        bool  has_i() const { return this->has(I); }
+        bool  has_j() const { return this->has(J); }
+        bool  has_p() const { return this->has(P); }
+
         bool  has_unknown_axis() const { return this->has(UNKNOWN_AXIS); }
         float x() const { return m_axis[X]; }
         float y() const { return m_axis[Y]; }
         float z() const { return m_axis[Z]; }
         float e() const { return m_axis[E]; }
         float f() const { return m_axis[F]; }
+        // BBS: add I J P axis
+        float i() const { return m_axis[I]; }
+        float j() const { return m_axis[J]; }
+        float p() const { return m_axis[P]; }
 
         static bool cmd_is(const std::string &gcode_line, const char *cmd_test) {
             const char *cmd = GCodeReader::skip_whitespaces(gcode_line.c_str());
@@ -78,7 +88,7 @@ public:
     typedef std::function<void(GCodeReader&, const GCodeLine&)> callback_t;
     typedef std::function<void(GCodeReader&, const char*, const char*)> raw_line_callback_t;
     
-    GCodeReader() : m_verbose(false), m_extrusion_axis('E') { this->reset(); }
+    GCodeReader() : m_verbose(false) { this->reset(); }
     void reset() { memset(m_position, 0, sizeof(m_position)); }
     void apply_config(const GCodeConfig &config);
     void apply_config(const DynamicPrintConfig &config);
@@ -134,10 +144,11 @@ public:
     float  e() const { return m_position[E]; }
     float& f()       { return m_position[F]; }
     float  f() const { return m_position[F]; }
-
-    // Returns 0 for gcfNoExtrusion.
-    char   extrusion_axis() const { return m_extrusion_axis; }
-//  void   set_extrusion_axis(char axis) { m_extrusion_axis = axis; }
+    // BBS: add I J axis
+    float& i()       { return m_position[I]; }
+    float  i() const { return m_position[I]; }
+    float& j()       { return m_position[J]; }
+    float  j() const { return m_position[J]; }
 
 private:
     template<typename ParseLineCallback, typename LineEndCallback>
@@ -164,7 +175,6 @@ private:
     }
 
     GCodeConfig m_config;
-    char        m_extrusion_axis;
     float       m_position[NUM_AXES];
     bool        m_verbose;
     // To be set by the callback to stop parsing.

@@ -30,6 +30,24 @@ class ModelObject;
 class Print;
 class PrintObject;
 class SupportLayer;
+// BBS
+class TreeSupportLayer;
+class TreeSupportData;
+class TreeSupport;
+
+// BBS: move from PrintObjectSlice.cpp
+struct VolumeSlices
+{
+    ObjectID                volume_id;
+    std::vector<ExPolygons> slices;
+};
+
+struct groupedVolumeSlices
+{
+    int                     groupId = -1;
+    std::vector<ObjectID>   volume_ids;
+    ExPolygons              slices;
+};
 
 namespace FillAdaptive {
     struct Octree;
@@ -55,7 +73,7 @@ enum PrintStep {
 
 enum PrintObjectStep {
     posSlice, posPerimeters, posPrepareInfill,
-    posInfill, posIroning, posSupportMaterial, posCount,
+    posInfill, posIroning, posSupportMaterial, posSimplifyPath, posSimplifySupportPath, posCount,
 };
 
 // A PrintRegion object represents a group of volumes to print
@@ -93,7 +111,7 @@ public:
 public:
     void                        set_config(const PrintRegionConfig &config) { m_config = config; m_config_hash = m_config.hash(); }
     void                        set_config(PrintRegionConfig &&config) { m_config = std::move(config); m_config_hash = m_config.hash(); }
-    void                        config_apply_only(const ConfigBase &other, const t_config_option_keys &keys, bool ignore_nonexistent = false) 
+    void                        config_apply_only(const ConfigBase &other, const t_config_option_keys &keys, bool ignore_nonexistent = false)
                                         { m_config.apply_only(other, keys, ignore_nonexistent); m_config_hash = m_config.hash(); }
 private:
     friend Print;
@@ -118,7 +136,8 @@ public:
     T * const *             begin() const { return m_data->data(); }
     T * const *             end()   const { return m_data->data() + m_data->size(); }
     const T*                front() const { return m_data->front(); }
-    const T*                back()  const { return m_data->front(); }
+    // BBS
+    const T*                back()  const { return m_data->back(); }
     size_t                  size()  const { return m_data->size(); }
     bool                    empty() const { return m_data->empty(); }
     const T*                operator[](size_t i) const { return (*m_data)[i]; }
@@ -142,6 +161,14 @@ typedef std::vector<const SupportLayer*>  ConstSupportLayerPtrs;
 class ConstSupportLayerPtrsAdaptor : public ConstVectorOfPtrsAdaptor<SupportLayer> {
     friend PrintObject;
     ConstSupportLayerPtrsAdaptor(const SupportLayerPtrs *data) : ConstVectorOfPtrsAdaptor<SupportLayer>(data) {}
+};
+
+// BBS
+typedef std::vector<TreeSupportLayer*>        TreeSupportLayerPtrs;
+typedef std::vector<const TreeSupportLayer*>  ConstTreeSupportLayerPtrs;
+class ConstTreeSupportLayerPtrsAdaptor : public ConstVectorOfPtrsAdaptor<TreeSupportLayer> {
+    friend PrintObject;
+    ConstTreeSupportLayerPtrsAdaptor(const TreeSupportLayerPtrs* data) : ConstVectorOfPtrsAdaptor<TreeSupportLayer>(data) {}
 };
 
 class BoundingBoxf3;        // TODO: for temporary constructor parameter
@@ -249,18 +276,31 @@ private: // Prevents erroneous use by other classes.
 public:
     // Size of an object: XYZ in scaled coordinates. The size might not be quite snug in XY plane.
     const Vec3crd&               size() const			{ return m_size; }
-    const PrintObjectConfig&     config() const         { return m_config; }    
+    const PrintObjectConfig&     config() const         { return m_config; }
+    void                         configBrimWidth(double m)      {m_config.brim_width.value = m; }
     ConstLayerPtrsAdaptor        layers() const         { return ConstLayerPtrsAdaptor(&m_layers); }
     ConstSupportLayerPtrsAdaptor support_layers() const { return ConstSupportLayerPtrsAdaptor(&m_support_layers); }
     const Transform3d&           trafo() const          { return m_trafo; }
     // Trafo with the center_offset() applied after the transformation, to center the object in XY before slicing.
-    Transform3d                  trafo_centered() const 
+    Transform3d                  trafo_centered() const
         { Transform3d t = this->trafo(); t.pretranslate(Vec3d(- unscale<double>(m_center_offset.x()), - unscale<double>(m_center_offset.y()), 0)); return t; }
     const PrintInstances&        instances() const      { return m_instances; }
+    // BBS
+    ConstTreeSupportLayerPtrsAdaptor tree_support_layers() const { return ConstTreeSupportLayerPtrsAdaptor(&m_tree_support_layers); }
 
     // Whoever will get a non-const pointer to PrintObject will be able to modify its layers.
     LayerPtrs&                   layers()               { return m_layers; }
     SupportLayerPtrs&            support_layers()       { return m_support_layers; }
+    // BBS
+    TreeSupportLayerPtrs&        tree_support_layers() { return m_tree_support_layers; }
+
+    template<typename PolysType>
+    static void remove_bridges_from_contacts(
+        const Layer* lower_layer,
+        const Layer* current_layer,
+        float extrusion_width,
+        PolysType* overhang_regions,
+        float max_bridge_length = scale_(10));
 
     // Bounding box is used to align the object infill patterns, and to calculate attractor for the rear seam.
     // The bounding box may not be quite snug.
@@ -271,10 +311,19 @@ public:
     // Centering offset of the sliced mesh from the scaled and rotated mesh of the model.
     const Point& 			     center_offset() const  { return m_center_offset; }
 
+    // BBS
+    void generate_support_preview();
+    const std::vector<VolumeSlices>& firstLayerObjSlice() const { return firstLayerObjSliceByVolume; }
+    const std::vector<groupedVolumeSlices>& firstLayerObjGroups() const { return firstLayerObjSliceByGroups; }
+
     bool                         has_brim() const       {
-        return this->config().brim_type != btNoBrim
-            && this->config().brim_width.value > 0.
+        return ((this->config().brim_type != btNoBrim && this->config().brim_width.value > 0.) || this->config().brim_type == btAutoBrim)
             && ! this->has_raft();
+    }
+
+    // BBS
+    const ExtrusionEntityCollection& object_skirt() const {
+        return m_skirt;
     }
 
     // This is the *total* layer count (including support layers)
@@ -297,13 +346,24 @@ public:
     // print_z: top of the layer; slice_z: center of the layer.
     Layer*          add_layer(int id, coordf_t height, coordf_t print_z, coordf_t slice_z);
 
+    // BBS
+    TreeSupportLayer* get_tree_support_layer(int idx) { return m_tree_support_layers[idx]; }
+    const TreeSupportLayer* get_tree_support_layer_at_printz(coordf_t print_z, coordf_t epsilon) const;
+    TreeSupportLayer* get_tree_support_layer_at_printz(coordf_t print_z, coordf_t epsilon);
+    TreeSupportLayer* add_tree_support_layer(int id, coordf_t height, coordf_t print_z, coordf_t slice_z);
+    void  clear_tree_support_layers();
+    size_t tree_support_layer_count() const { return m_tree_support_layers.size(); }
+    std::shared_ptr<TreeSupportData> alloc_tree_support_preview_cache();
+
     size_t          support_layer_count() const { return m_support_layers.size(); }
     void            clear_support_layers();
     SupportLayer*   get_support_layer(int idx) { return m_support_layers[idx]; }
+    const SupportLayer* get_support_layer_at_printz(coordf_t print_z, coordf_t epsilon) const;
+    SupportLayer*   get_support_layer_at_printz(coordf_t print_z, coordf_t epsilon);
     SupportLayer*   add_support_layer(int id, int interface_id, coordf_t height, coordf_t print_z);
     SupportLayerPtrs::iterator insert_support_layer(SupportLayerPtrs::iterator pos, size_t id, size_t interface_id, coordf_t height, coordf_t print_z, coordf_t slice_z);
     void            delete_support_layer(int idx);
-    
+
     // Initialize the layer_height_profile from the model_object's layer_height_profile, from model_object's layer height table, or from slicing parameters.
     // Returns true, if the layer_height_profile was changed.
     static bool     update_layer_height_profile(const ModelObject &model_object, const SlicingParameters &slicing_parameters, std::vector<coordf_t> &layer_height_profile);
@@ -321,7 +381,7 @@ public:
     std::vector<std::reference_wrapper<const PrintRegion>> all_regions() const;
     const PrintObjectRegions*   shared_regions() const throw() { return m_shared_regions; }
 
-    bool                        has_support()           const { return m_config.support_material || m_config.support_material_enforce_layers > 0; }
+    bool                        has_support()           const { return m_config.enable_support || m_config.enforce_support_layers > 0; }
     bool                        has_raft()              const { return m_config.raft_layers > 0; }
     bool                        has_support_material()  const { return this->has_support() || this->has_raft(); }
     // Checks if the model object is painted using the multi-material painting gizmo.
@@ -341,13 +401,18 @@ public:
     // Helpers to project custom facets on slices
     void project_and_append_custom_facets(bool seam, EnforcerBlockerType type, std::vector<Polygons>& expolys) const;
 
+    //BBS
+    BoundingBox get_first_layer_bbox(float& area, float& layer_height, std::string& name);
+
+    // BBS: Boundingbox of the first layer
+    BoundingBox                 firstLayerObjectBrimBoundingBox;
 private:
     // to be called from Print only.
     friend class Print;
 
 	PrintObject(Print* print, ModelObject* model_object, const Transform3d& trafo, PrintInstances&& instances);
 	~PrintObject() { if (m_shared_regions && -- m_shared_regions->m_ref_cnt == 0) delete m_shared_regions; }
- 
+
     void                    config_apply(const ConfigBase &other, bool ignore_nonexistent = false) { m_config.apply(other, ignore_nonexistent); }
     void                    config_apply_only(const ConfigBase &other, const t_config_option_keys &keys, bool ignore_nonexistent = false) { m_config.apply_only(other, keys, ignore_nonexistent); }
     PrintBase::ApplyStatus  set_instances(PrintInstances &&instances);
@@ -370,8 +435,11 @@ private:
     void infill();
     void ironing();
     void generate_support_material();
+    void simplify_extrusion_path();
 
     void slice_volumes();
+    //BBS
+    ExPolygons _shrink_contour_holes(double contour_delta, double hole_delta, const ExPolygons& polys) const;
     // Has any support (not counting the raft).
     void detect_surfaces_type();
     void process_external_surfaces();
@@ -382,6 +450,9 @@ private:
     void combine_infill();
     void _generate_support_material();
     std::pair<FillAdaptive::OctreePtr, FillAdaptive::OctreePtr> prepare_adaptive_infill_data();
+
+    // BBS
+    bool is_support_necessary();
 
     // XYZ in scaled coordinates
     Vec3crd									m_size;
@@ -401,10 +472,25 @@ private:
     SlicingParameters                       m_slicing_params;
     LayerPtrs                               m_layers;
     SupportLayerPtrs                        m_support_layers;
+    // BBS
+    TreeSupportLayerPtrs                    m_tree_support_layers;
+    std::shared_ptr<TreeSupportData>        m_tree_support_preview_cache;
 
     // this is set to true when LayerRegion->slices is split in top/internal/bottom
     // so that next call to make_perimeters() performs a union() before computing loops
     bool                    				m_typed_slices = false;
+    std::vector < VolumeSlices >            firstLayerObjSliceByVolume;
+    std::vector<groupedVolumeSlices>        firstLayerObjSliceByGroups;
+    // BBS: per object skirt
+    ExtrusionEntityCollection               m_skirt;
+
+ public:
+    //BBS: When printing multi-material objects, this settings will make slicer to clip the overlapping object parts one by the other.
+    //(2nd part will be clipped by the 1st, 3rd part will be clipped by the 1st and 2nd etc).
+    // This was a per-object setting and now we default enable it.
+    static bool clip_multipart_objects;
+    static bool infill_only_where_needed;
+    static bool ensure_vertical_shell_thickness;
 };
 
 struct WipeTowerData
@@ -435,7 +521,7 @@ struct WipeTowerData
     }
 
 private:
-	// Only allow the WipeTowerData to be instantiated internally by Print, 
+	// Only allow the WipeTowerData to be instantiated internally by Print,
 	// as this WipeTowerData shares reference to Print::m_tool_ordering.
 	friend class Print;
 	WipeTowerData(ToolOrdering &tool_ordering) : tool_ordering(tool_ordering) { clear(); }
@@ -525,7 +611,7 @@ public:
 
     // methods for handling state
     bool                is_step_done(PrintStep step) const { return Inherited::is_step_done(step); }
-    // Returns true if an object step is done on all objects and there's at least one object.    
+    // Returns true if an object step is done on all objects and there's at least one object.
     bool                is_step_done(PrintObjectStep step) const;
     // Returns true if the last step was finished with success.
     bool                finished() const override { return this->is_step_done(psGCodeExport); }
@@ -533,13 +619,17 @@ public:
     bool                has_infinite_skirt() const;
     bool                has_skirt() const;
     bool                has_brim() const;
+    //BBS
+    bool                has_auto_brim() const    {
+        return std::any_of(m_objects.begin(), m_objects.end(), [](PrintObject* object) { return object->config().brim_type == btAutoBrim; });
+    }
 
     // Returns an empty string if valid, otherwise returns an error message.
-    std::string         validate(std::string* warning = nullptr) const override;
+    StringObjectException validate(StringObjectException *warning = nullptr, Polygons* collison_polygons = nullptr, std::vector<std::pair<Polygon, float>>* height_polygons = nullptr) const override;
     double              skirt_first_layer_height() const;
     Flow                brim_flow() const;
     Flow                skirt_flow() const;
-    
+
     std::vector<unsigned int> object_extruders() const;
     std::vector<unsigned int> support_material_extruders() const;
     std::vector<unsigned int> extruders() const;
@@ -556,21 +646,24 @@ public:
     const PrintObject*          get_object(size_t idx) const { return m_objects[idx]; }
     // PrintObject by its ObjectID, to be used to uniquely bind slicing warnings to their source PrintObjects
     // in the notification center.
-    const PrintObject*          get_object(ObjectID object_id) const { 
-        auto it = std::find_if(m_objects.begin(), m_objects.end(), 
+    const PrintObject*          get_object(ObjectID object_id) const {
+        auto it = std::find_if(m_objects.begin(), m_objects.end(),
             [object_id](const PrintObject *obj) { return obj->id() == object_id; });
         return (it == m_objects.end()) ? nullptr : *it;
     }
+    //BBS: Function to get m_brimMap;
+    std::map<ObjectID, ExtrusionEntityCollection>&
+        get_brimMap() { return m_brimMap; }
+
     // How many of PrintObject::copies() over all print objects are there?
     // If zero, then the print is empty and the print shall not be executed.
     unsigned int                num_object_instances() const;
 
-    // For Perl bindings. 
+    // For Perl bindings.
     PrintObjectPtrs&            objects_mutable() { return m_objects; }
     PrintRegionPtrs&            print_regions_mutable() { return m_print_regions; }
 
     const ExtrusionEntityCollection& skirt() const { return m_skirt; }
-    const ExtrusionEntityCollection& brim() const { return m_brim; }
     // Convex hull of the 1st layer extrusions, for bed leveling and placing the initial purge line.
     // It encompasses the object extrusions, support extrusions, skirt, brim, wipe tower.
     // It does NOT encompass user extrusions generated by custom G-code,
@@ -583,7 +676,7 @@ public:
 
     // Wipe tower support.
     bool                        has_wipe_tower() const;
-    const WipeTowerData&        wipe_tower_data(size_t extruders_cnt = 0) const;
+    const WipeTowerData&        wipe_tower_data(size_t filaments_cnt = 0) const;
     const ToolOrdering& 		tool_ordering() const { return m_tool_ordering; }
 
 	std::string                 output_filename(const std::string &filename_base = std::string()) const override;
@@ -592,13 +685,30 @@ public:
     const PrintRegion&          get_print_region(size_t idx) const  { return *m_print_regions[idx]; }
     const ToolOrdering&         get_tool_ordering() const { return m_wipe_tower_data.tool_ordering; }
 
-    static bool sequential_print_horizontal_clearance_valid(const Print& print, Polygons* polygons = nullptr);
+    //BBS: plate's origin related functions
+    void set_plate_origin(Vec3d origin) { m_origin = origin; }
+    const Vec3d get_plate_origin() const { return m_origin; }
+    //BBS: export gcode from previous gcode file from 3mf
+    void set_gcode_file_ready();
+    void set_gcode_file_invalidated();
+    void export_gcode_from_previous_file(const std::string& file, GCodeProcessorResult* result, ThumbnailsGeneratorCallback thumbnail_cb = nullptr);
+    //BBS: add modify_count logic
+    int get_modified_count() const {return m_modified_count;}
+
+    //BBS
+    static StringObjectException sequential_print_clearance_valid(const Print &print, Polygons *polygons = nullptr, std::vector<std::pair<Polygon, float>>* height_polygons = nullptr);
+
+    // Return 4 wipe tower corners in the world coordinates (shifted and rotated), including the wipe tower brim.
+    std::vector<Point>  first_layer_wipe_tower_corners(bool check_wipe_tower_existance=true) const;
 
 protected:
     // Invalidates the step, and its depending steps in Print.
     bool                invalidate_step(PrintStep step);
 
 private:
+    //BBS
+    static StringObjectException check_multi_filament_valid(const Print &print);
+
     bool                invalidate_state_by_config_options(const ConfigOptionResolver &new_config, const std::vector<t_config_option_key> &opt_keys);
 
     void                _make_skirt();
@@ -607,8 +717,6 @@ private:
 
     // Islands of objects and their supports extruded at the 1st layer.
     Polygons            first_layer_islands() const;
-    // Return 4 wipe tower corners in the world coordinates (shifted and rotated), including the wipe tower brim.
-    std::vector<Point>  first_layer_wipe_tower_corners() const;
 
     PrintConfig                             m_config;
     PrintObjectConfig                       m_default_object_config;
@@ -618,7 +726,9 @@ private:
 
     // Ordered collections of extrusion paths to build skirt loops and brim.
     ExtrusionEntityCollection               m_skirt;
-    ExtrusionEntityCollection               m_brim;
+    // BBS: collecting extrusion paths to build brim by objs
+    std::map<ObjectID, ExtrusionEntityCollection>         m_brimMap;
+    std::map<ObjectID, ExtrusionEntityCollection>         m_supportBrimMap;
     // Convex hull of the 1st layer extrusions.
     // It encompasses the object extrusions, support extrusions, skirt, brim, wipe tower.
     // It does NOT encompass user extrusions generated by custom G-code,
@@ -634,10 +744,19 @@ private:
     // Estimated print time, filament consumed.
     PrintStatistics                         m_print_statistics;
 
+    //BBS: plate's origin
+    Vec3d   m_origin;
+    //BBS: modified_count
+    int     m_modified_count {0};
+
     // To allow GCode to set the Print's GCodeExport step status.
     friend class GCode;
     // Allow PrintObject to access m_mutex and m_cancel_callback.
     friend class PrintObject;
+
+public:
+    //BBS: this was a print config and now seems to be useless so we move it to here
+    static float min_skirt_length;
 };
 
 } /* slic3r_Print_hpp_ */

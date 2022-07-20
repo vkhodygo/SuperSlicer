@@ -4,6 +4,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "GUI_Utils.hpp"
 #include <wx/dialog.h>
 #include <wx/font.h>
 #include <wx/bitmap.h>
@@ -11,41 +12,70 @@
 #include <wx/richmsgdlg.h>
 #include <wx/textctrl.h>
 #include <wx/statline.h>
+#include "Widgets/Button.hpp"
 
 class wxBoxSizer;
 class wxCheckBox;
 class wxStaticBitmap;
 
-namespace Slic3r {
+enum ButtonSizeType{
+	ButtonSizeNormal = 0,
+	ButtonSizeMiddle = 1,
+	ButtonSizeLong	 = 2,
+};
 
+#define MSG_DIALOG_BUTTON_SIZE wxSize(FromDIP(58), FromDIP(24))
+#define MSG_DIALOG_MIDDLE_BUTTON_SIZE wxSize(FromDIP(76), FromDIP(24))
+#define MSG_DIALOG_LONG_BUTTON_SIZE wxSize(FromDIP(90), FromDIP(24))
+
+
+namespace Slic3r {
 namespace GUI {
+
+struct ButtonData
+{
+    ButtonSizeType type;
+	Button * button;
+};
+
+class MsgButton
+{
+public:
+    wxString id;
+    ButtonData *buttondata;
+};
+
+WX_DECLARE_HASH_MAP(wxString, MsgButton *, wxStringHash, wxStringEqual, MsgButtonsHash);
 
 // A message / query dialog with a bitmap on the left and any content on the right
 // with buttons underneath.
-struct MsgDialog : wxDialog
+struct MsgDialog : DPIDialog
 {
 	MsgDialog(MsgDialog &&) = delete;
 	MsgDialog(const MsgDialog &) = delete;
 	MsgDialog &operator=(MsgDialog &&) = delete;
 	MsgDialog &operator=(const MsgDialog &) = delete;
-	virtual ~MsgDialog() = default;
+	virtual ~MsgDialog();
 
+	virtual void on_dpi_changed(const wxRect &suggested_rect);
 	void SetButtonLabel(wxWindowID btn_id, const wxString& label, bool set_focus = false);
 
 protected:
 	enum {
-		CONTENT_WIDTH = 70,//50,
-		CONTENT_MAX_HEIGHT = 60,
-		BORDER = 30,
-		VERT_SPACING = 15,
-		HORIZ_SPACING = 5,
+		BORDER = 20,
+		LOGO_SPACING = 35,
+		LOGO_GAP = 20,
+		CONTENT_WIDTH = 242,
+		CONTENT_MAX_HEIGHT = 60,//TO
+		BTN_SPACING = 20,
+		VERT_SPACING = 15,//TO
 	};
 
 	MsgDialog(wxWindow *parent, const wxString &title, const wxString &headline, long style = wxOK, wxBitmap bitmap = wxNullBitmap);
 	// returns pointer to created button
-	wxButton* add_button(wxWindowID btn_id, bool set_focus = false, const wxString& label = wxString());
+	Button* add_button(wxWindowID btn_id, bool set_focus = false, const wxString& label = wxString());
 	// returns pointer to found button or NULL
-	wxButton* get_button(wxWindowID btn_id);
+	Button* get_button(wxWindowID btn_id);
 	void apply_style(long style);
 	void finalize();
 
@@ -53,6 +83,7 @@ protected:
 	wxBoxSizer *content_sizer;
 	wxBoxSizer *btn_sizer;
 	wxStaticBitmap *logo;
+    MsgButtonsHash  m_buttons;
 };
 
 
@@ -315,6 +346,22 @@ public:
 
 private:
 	wxString msg;
+};
+
+class DownloadDialog : public MsgDialog
+{
+public:
+    DownloadDialog(wxWindow *parent, const wxString &title, const wxString &msg, bool is_marked = false, long style = wxOK | wxCANCEL);
+    DownloadDialog(InfoDialog &&)      = delete;
+    DownloadDialog(const InfoDialog &) = delete;
+    DownloadDialog &operator=(InfoDialog &&) = delete;
+    DownloadDialog &operator=(const InfoDialog &) = delete;
+    virtual ~DownloadDialog()                     = default;
+
+	void SetExtendedMessage(const wxString &extendedMessage);
+
+private:
+    wxString msg;
 };
 
 

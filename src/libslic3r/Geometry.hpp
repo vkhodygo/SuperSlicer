@@ -343,6 +343,11 @@ Vec3d extract_euler_angles(const Eigen::Matrix<double, 3, 3, Eigen::DontAlign>& 
 // Warning -> The transform should not contain any shear !!!
 Vec3d extract_euler_angles(const Transform3d& transform);
 
+// get rotation from two vectors.
+// Default output is axis-angle. If rotation_matrix pointer is provided, also output rotation matrix
+// Euler angles can be obtained by extract_euler_angles()
+void rotation_from_two_vectors(Vec3d from, Vec3d to, Vec3d& rotation_axis, double& phi, Matrix3d* rotation_matrix = nullptr);
+
 class Transformation
 {
     struct Flags
@@ -370,6 +375,9 @@ class Transformation
 public:
     Transformation();
     explicit Transformation(const Transform3d& transform);
+
+    //BBS: add get dirty function
+    bool is_dirty() { return m_dirty; }
 
     const Vec3d& get_offset() const { return m_offset; }
     double get_offset(Axis axis) const { return m_offset(axis); }
@@ -409,6 +417,11 @@ public:
     // as possible in least squares norm in regard to the 8 corners of bbox.
     // Bounding box is expected to be centered around zero in all axes.
     static Transformation volume_to_bed_transformation(const Transformation& instance_transformation, const BoundingBoxf3& bbox);
+
+    // BBS: backup use this compare
+    friend bool operator==(Transformation const& l, Transformation const& r) {
+        return l.m_offset == r.m_offset && l.m_rotation == r.m_rotation && l.m_scaling_factor == r.m_scaling_factor && l.m_mirror == r.m_mirror;
+    }
 
 private:
 	friend class cereal::access;

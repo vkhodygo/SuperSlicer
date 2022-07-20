@@ -40,21 +40,30 @@ typedef std::map<t_layer_height_range, ModelConfig> t_layer_config_ranges;
 #define FIX_THROUGH_NETFABB_ALWAYS 1
 
 namespace GUI {
+struct ObjectVolumeID {
+    ModelObject* object{ nullptr };
+    ModelVolume* volume{ nullptr };
+};
+
+typedef Event<ObjectVolumeID> ObjectSettingEvent;
+
+class PartPlate;
 
 wxDECLARE_EVENT(EVT_OBJ_LIST_OBJECT_SELECT, SimpleEvent);
+wxDECLARE_EVENT(EVT_PARTPLATE_LIST_PLATE_SELECT, IntEvent);
 class BitmapComboBox;
 
 struct ItemForDelete
 {
     ItemType    type;
-    int         obj_idx; 
+    int         obj_idx;
     int         sub_obj_idx;
 
     ItemForDelete(ItemType type, int obj_idx, int sub_obj_idx)
         : type(type), obj_idx(obj_idx), sub_obj_idx(sub_obj_idx)
     {}
 
-    bool operator==(const ItemForDelete& r) const 
+    bool operator==(const ItemForDelete& r) const
     {
         return (type == r.type && obj_idx == r.obj_idx && sub_obj_idx == r.sub_obj_idx);
     }
@@ -67,7 +76,7 @@ struct ItemForDelete
     }
 };
 
-struct MeshErrorsInfo 
+struct MeshErrorsInfo
 {
     wxString    tooltip;
     std::string warning_icon_name;
@@ -86,10 +95,16 @@ public:
         smLayerRoot = 16, // used for undo/redo
     };
 
+    enum OBJECT_ORGANIZE_TYPE
+    {
+        ortByPlate = 0,
+        ortByModule = 1,
+    };
+
     struct Clipboard
     {
         void reset() {
-            m_type = itUndef; 
+            m_type = itUndef;
             m_layer_config_ranges_cache .clear();
             m_config_cache.clear();
         }
@@ -159,11 +174,11 @@ private:
     std::vector<wxBitmap*>      m_bmp_vector;
 
     int			m_selected_object_id = -1;
-    bool		m_prevent_list_events = false;		// We use this flag to avoid circular event handling Select() 
-                                                    // happens to fire a wxEVT_LIST_ITEM_SELECTED on OSX, whose event handler 
+    bool		m_prevent_list_events = false;		// We use this flag to avoid circular event handling Select()
+                                                    // happens to fire a wxEVT_LIST_ITEM_SELECTED on OSX, whose event handler
                                                     // calls this method again and again and again
 
-    bool        m_prevent_update_extruder_in_config = false; // We use this flag to avoid updating of the extruder value in config 
+    bool        m_prevent_update_filament_in_config = false; // We use this flag to avoid updating of the extruder value in config
                                                              // during updating of the extruder count.
 
     bool        m_prevent_canvas_selection_update = false; // This flag prevents changing selection on the canvas. See function
@@ -203,28 +218,37 @@ public:
     ModelObject*                object(const int obj_idx) const ;
 
     void                create_objects_ctrl();
-    void                update_objects_list_extruder_column(size_t extruders_count);
-    void                update_extruder_colors();
+    // BBS
+    void                update_objects_list_filament_column(size_t filaments_count);
+    void                update_filament_colors();
     // show/hide "Extruder" column for Objects List
-    void                set_extruder_column_hidden(const bool hide) const;
+    void                set_filament_column_hidden(const bool hide) const;
+    // BBS
+    void                set_color_paint_hidden(const bool hide) const;
+    void                set_support_paint_hidden(const bool hide) const;
+
     // update extruder in current config
-    void                update_extruder_in_config(const wxDataViewItem& item);
+    void                update_filament_in_config(const wxDataViewItem& item);
     // update changed name in the object model
     void                update_name_in_model(const wxDataViewItem& item) const;
     void                update_name_in_list(int obj_idx, int vol_idx) const;
-    void                update_extruder_values_for_items(const size_t max_extruder);
+    void                update_filament_values_for_items(const size_t filaments_count);
+
+    //BBS: update plate
+    void                update_plate_values_for_items();
+    void                update_name_for_items();
 
     // Get obj_idx and vol_idx values for the selected (by default) or an adjusted item
     void                get_selected_item_indexes(int& obj_idx, int& vol_idx, const wxDataViewItem& item = wxDataViewItem(0));
     void                get_selection_indexes(std::vector<int>& obj_idxs, std::vector<int>& vol_idxs);
     // Get count of errors in the mesh
     int                 get_repaired_errors_count(const int obj_idx, const int vol_idx = -1) const;
-    // Get list of errors in the mesh and name of the warning icon 
+    // Get list of errors in the mesh and name of the warning icon
     // Return value is a pair <Tooltip, warning_icon_name>, used for the tooltip and related warning icon
-    // Function without parameters is for a call from Manipulation panel, 
-    // when we don't know parameters of selected item 
-    MeshErrorsInfo      get_mesh_errors_info(const int obj_idx, const int vol_idx = -1, wxString* sidebar_info = nullptr) const;
-    MeshErrorsInfo      get_mesh_errors_info(wxString* sidebar_info = nullptr);
+    // Function without parameters is for a call from Manipulation panel,
+    // when we don't know parameters of selected item
+    MeshErrorsInfo      get_mesh_errors_info(const int obj_idx, const int vol_idx = -1, wxString* sidebar_info = nullptr, int* non_manifold_edges = nullptr) const;
+    MeshErrorsInfo      get_mesh_errors_info(wxString* sidebar_info = nullptr, int* non_manifold_edges = nullptr);
     void                set_tooltip_for_item(const wxPoint& pt);
 
     void                selection_changed();
@@ -236,6 +260,10 @@ public:
 
     void                copy();
     void                paste();
+    void                cut();
+    //BBS
+    void                clone();
+    bool                cut_to_clipboard();
     bool                copy_to_clipboard();
     bool                paste_from_clipboard();
     void                undo();
@@ -253,11 +281,9 @@ public:
     //void                load_part(ModelObject& model_object, std::vector<ModelVolume*>& added_volumes, ModelVolumeType type, bool from_galery = false);
     void                load_modifier(const wxArrayString& input_files, ModelObject& model_object, std::vector<ModelVolume*>& added_volumes, ModelVolumeType type, bool from_galery = false);
     void                load_generic_subobject(const std::string& type_name, const ModelVolumeType type);
-    void                load_shape_object(const std::string &type_name);
-    void                load_shape_object_from_gallery();
-    void                load_shape_object_from_gallery(const wxArrayString& input_files);
-    void                load_mesh_object(const TriangleMesh &mesh, const wxString &name, bool center = true);
-    void                del_object(const int obj_idx);
+    void                load_shape_object(const std::string &type_name, bool is_timelapse_wt = false);
+    void                load_mesh_object(const TriangleMesh &mesh, const wxString &name, bool center = true, bool is_timelapse_wt = false);
+    void                del_object(const int obj_idx, bool refresh_immediately = true);
     void                del_subobject_item(wxDataViewItem& item);
     void                del_settings_from_config(const wxDataViewItem& parent_item);
     void                del_instances_from_object(const int obj_idx);
@@ -267,6 +293,7 @@ public:
     void                del_info_item(const int obj_idx, InfoItemType type);
     void                split();
     void                merge(bool to_multipart_object);
+    void                merge_volumes(); // BBS: merge parts to single part
     void                layers_editing();
 
     wxDataViewItem      add_layer_root_item(const wxDataViewItem obj_item);
@@ -289,7 +316,7 @@ public:
     void                part_selection_changed();
 
     // Add object to the list
-    void add_object_to_list(size_t obj_idx, bool call_selection_changed = true);
+    void add_object_to_list(size_t obj_idx, bool call_selection_changed = true, bool notify_partplate = true);
     // Delete object from the list
     void delete_object_from_list();
     void delete_object_from_list(const size_t obj_idx);
@@ -322,8 +349,8 @@ public:
     // Rather providing the range by a value than by a reference, so that the memory referenced cannot be invalidated.
     void add_layer_range_after_current(const t_layer_height_range current_range);
     wxString can_add_new_range_after_current( t_layer_height_range current_range);
-    void add_layer_item (const t_layer_height_range& range, 
-                         const wxDataViewItem layers_item, 
+    void add_layer_item (const t_layer_height_range& range,
+                         const wxDataViewItem layers_item,
                          const int layer_idx = -1);
     bool edit_layer_range(const t_layer_height_range& range, coordf_t layer_height);
     // This function may be called when a text field loses focus for a "add layer" or "remove layer" button.
@@ -331,12 +358,12 @@ public:
     // are already planned for them and destroying these widgets leads to crashes at least on OSX.
     // In that case the "add layer" or "remove layer" button handlers are responsible for always rebuilding the panel
     // even if the "add layer" or "remove layer" buttons did not update the layer spans or layer heights.
-    bool edit_layer_range(const t_layer_height_range& range, 
+    bool edit_layer_range(const t_layer_height_range& range,
                           const t_layer_height_range& new_range,
                           // Don't destroy the panel with the "add layer" or "remove layer" buttons.
                           bool suppress_ui_update = false);
 
-    void init_objects();
+    void init();
     bool multiple_selection() const ;
     bool is_selected(const ItemType type) const;
     int  get_selected_layers_range_idx() const;
@@ -347,6 +374,9 @@ public:
     void select_item(const wxDataViewItem& item);
     void select_item(std::function<wxDataViewItem()> get_item);
     void select_items(const wxDataViewItemArray& sels);
+    // BBS
+    void select_item(const ObjectVolumeID& ov_id);
+    void select_items(const std::vector<ObjectVolumeID>& ov_ids);
     void select_all();
     void select_item_all_children();
     void update_selection_mode();
@@ -375,7 +405,7 @@ public:
     void paste_layers_into_list();
     void copy_settings_to_clipboard();
     void paste_settings_into_list();
-    bool clipboard_is_empty() const { return m_clipboard.empty(); } 
+    bool clipboard_is_empty() const { return m_clipboard.empty(); }
     void paste_volumes_into_list(int obj_idx, const ModelVolumePtrs& volumes);
     void paste_objects_into_list(const std::vector<size_t>& object_idxs);
 
@@ -387,17 +417,31 @@ public:
     void update_printable_state(int obj_idx, int instance_idx);
     void toggle_printable_state();
 
-    void set_extruder_for_selected_items(const int extruder) const ;
+    //BBS: remove const qualifier
+    void set_extruder_for_selected_items(const int extruder);
     wxDataViewItemArray reorder_volumes_and_get_selection(int obj_idx, std::function<bool(const ModelVolume*)> add_to_selection = nullptr);
     void apply_volumes_order();
     bool has_paint_on_segmentation();
 
+    // BBS
+    void on_plate_added(PartPlate* part_plate);
+    void on_plate_deleted(int plate_index);
+    void reload_all_plates(bool notify_partplate = false);
+    void on_plate_selected(int plate_index);
+    void notify_instance_updated(int obj_idx);
+    void object_config_options_changed(const ObjectVolumeID& ov_id);
+    void printable_state_changed(const std::vector<ObjectVolumeID>& ov_ids);
+
 private:
 #ifdef __WXOSX__
 //    void OnChar(wxKeyEvent& event);
+    wxAcceleratorTable m_accel;
 #endif /* __WXOSX__ */
     void OnContextMenu(wxDataViewEvent &event);
     void list_manipulation(const wxPoint& mouse_pos, bool evt_context_menu = false);
+
+    // BBS
+    void update_name_column_width() const;
 
     void OnBeginDrag(wxDataViewEvent &event);
     void OnDropPossible(wxDataViewEvent &event);
@@ -405,11 +449,16 @@ private:
     bool can_drop(const wxDataViewItem& item) const ;
 
     void ItemValueChanged(wxDataViewEvent &event);
-#ifdef __WXMSW__
     // Workaround for entering the column editing mode on Windows. Simulate keyboard enter when another column of the active line is selected.
 	void OnEditingStarted(wxDataViewEvent &event);
-#endif /* __WXMSW__ */
     void OnEditingDone(wxDataViewEvent &event);
+
+    // BBS
+    void OnColumnHeadClicked(wxDataViewEvent& event);
+    void OnOrganizeObjects(OBJECT_ORGANIZE_TYPE type);
+    wxMenu m_object_org_menu;
+
+    std::vector<int> m_columns_width;
 };
 
 

@@ -25,21 +25,21 @@ Flow LayerRegion::flow(FlowRole role, double layer_height) const
     return m_region->flow(*m_layer->object(), role, layer_height, m_layer->id() == 0);
 }
 
-Flow LayerRegion::bridging_flow(FlowRole role) const
+Flow LayerRegion::bridging_flow(FlowRole role, bool thick_bridge) const
 {
     const PrintRegion       &region         = this->region();
     const PrintRegionConfig &region_config  = region.config();
     const PrintObject       &print_object   = *this->layer()->object();
-    if (print_object.config().thick_bridges) {
+    if (thick_bridge) {
         // The old Slic3r way (different from all other slicers): Use rounded extrusions.
         // Get the configured nozzle_diameter for the extruder associated to the flow role requested.
         // Here this->extruder(role) - 1 may underflow to MAX_INT, but then the get_at() will follback to zero'th element, so everything is all right.
         auto nozzle_diameter = float(print_object.print()->config().nozzle_diameter.get_at(region.extruder(role) - 1));
         // Applies default bridge spacing.
-        return Flow::bridging_flow(float(sqrt(region_config.bridge_flow_ratio)) * nozzle_diameter, nozzle_diameter);
+        return Flow::bridging_flow(float(sqrt(region_config.bridge_flow)) * nozzle_diameter, nozzle_diameter);
     } else {
-        // The same way as other slicers: Use normal extrusions. Apply bridge_flow_ratio while maintaining the original spacing.
-        return this->flow(role).with_flow_ratio(region_config.bridge_flow_ratio);
+        // The same way as other slicers: Use normal extrusions. Apply bridge_flow while maintaining the original spacing.
+        return this->flow(role).with_flow_ratio(region_config.bridge_flow);
     }
 }
 
@@ -71,10 +71,10 @@ void LayerRegion::make_perimeters(const SurfaceCollection &slices, SurfaceCollec
     const PrintConfig       &print_config  = this->layer()->object()->print()->config();
     const PrintRegionConfig &region_config = this->region().config();
     // This needs to be in sync with PrintObject::_slice() slicing_mode_normal_below_layer!
-    bool spiral_vase = print_config.spiral_vase &&
+    bool spiral_mode = print_config.spiral_mode &&
         //FIXME account for raft layers.
-        (this->layer()->id() >= size_t(region_config.bottom_solid_layers.value) &&
-         this->layer()->print_z >= region_config.bottom_solid_min_thickness - EPSILON);
+        (this->layer()->id() >= size_t(region_config.bottom_shell_layers.value) &&
+         this->layer()->print_z >= region_config.bottom_shell_thickness - EPSILON);
 
     PerimeterGenerator g(
         // input:
@@ -84,7 +84,7 @@ void LayerRegion::make_perimeters(const SurfaceCollection &slices, SurfaceCollec
         &region_config,
         &this->layer()->object()->config(),
         &print_config,
-        spiral_vase,
+        spiral_mode,
         
         // output:
         &this->perimeters,
@@ -95,13 +95,18 @@ void LayerRegion::make_perimeters(const SurfaceCollection &slices, SurfaceCollec
     if (this->layer()->lower_layer != nullptr)
         // Cummulative sum of polygons over all the regions.
         g.lower_slices = &this->layer()->lower_layer->lslices;
+    if (this->layer()->upper_layer != NULL)
+        g.upper_slices = &this->layer()->upper_layer->lslices;
     
     g.layer_id              = (int)this->layer()->id();
     g.ext_perimeter_flow    = this->flow(frExternalPerimeter);
-    g.overhang_flow         = this->bridging_flow(frPerimeter);
+    g.overhang_flow         = this->bridging_flow(frPerimeter, g_config_thick_bridges);
     g.solid_infill_flow     = this->flow(frSolidInfill);
     
     g.process();
+
+    // BBS
+    this->fill_no_overlap_expolygons = g.fill_no_overlap;
 }
 
 //#define EXTERNAL_SURFACES_OFFSET_PARAMETERS ClipperLib::jtMiter, 3.
@@ -110,7 +115,7 @@ void LayerRegion::make_perimeters(const SurfaceCollection &slices, SurfaceCollec
 
 void LayerRegion::process_external_surfaces(const Layer *lower_layer, const Polygons *lower_layer_covered)
 {
-    const bool      has_infill = this->region().config().fill_density.value > 0.;
+    const bool      has_infill = this->region().config().sparse_infill_density.value > 0.;
     const float		margin 	   = float(scale_(EXTERNAL_INFILL_MARGIN));
 
 #ifdef SLIC3R_DEBUG_SLICE_PROCESSING
@@ -280,11 +285,12 @@ void LayerRegion::process_external_surfaces(const Layer *lower_layer, const Poly
                 // would get merged into a single one while they need different directions
                 // also, supply the original expolygon instead of the grown one, because in case
                 // of very thin (but still working) anchors, the grown expolygon would go beyond them
-                BridgeDetector bd(initial, lower_layer->lslices, this->bridging_flow(frInfill).scaled_width());
+                BridgeDetector bd(initial, lower_layer->lslices, this->bridging_flow(frInfill, g_config_thick_bridges).scaled_width());
                 #ifdef SLIC3R_DEBUG
                 printf("Processing bridge at layer %zu:\n", this->layer()->id());
                 #endif
-				double custom_angle = Geometry::deg2rad(this->region().config().bridge_angle.value);
+                //BBS: use 0 as custom angle to enable auto detection all the time
+				double custom_angle = Geometry::deg2rad(0.0);
 				if (bd.detect_angle(custom_angle)) {
                     bridges[idx_last].bridge_angle = bd.angle;
                     if (this->layer()->object()->has_support()) {
@@ -380,24 +386,26 @@ void LayerRegion::prepare_fill_surfaces()
         alter fill_surfaces boundaries on which our idempotency relies since that's
         the only meaningful information returned by psPerimeters. */
     
-    bool spiral_vase = this->layer()->object()->print()->config().spiral_vase;
+    bool spiral_mode = this->layer()->object()->print()->config().spiral_mode;
 
     // if no solid layers are requested, turn top/bottom surfaces to internal
-    if (! spiral_vase && this->region().config().top_solid_layers == 0) {
+    if (! spiral_mode && this->region().config().top_shell_layers == 0) {
         for (Surface &surface : this->fill_surfaces.surfaces)
             if (surface.is_top())
-                surface.surface_type = this->layer()->object()->config().infill_only_where_needed ? stInternalVoid : stInternal;
+                //BBS
+                //surface.surface_type = this->layer()->object()->config().infill_only_where_needed ? stInternalVoid : stInternal;
+                surface.surface_type = PrintObject::infill_only_where_needed ? stInternalVoid : stInternal;
     }
-    if (this->region().config().bottom_solid_layers == 0) {
+    if (this->region().config().bottom_shell_layers == 0) {
         for (Surface &surface : this->fill_surfaces.surfaces)
             if (surface.is_bottom()) // (surface.surface_type == stBottom)
                 surface.surface_type = stInternal;
     }
 
     // turn too small internal regions into solid regions according to the user setting
-    if (! spiral_vase && this->region().config().fill_density.value > 0) {
+    if (! spiral_mode && this->region().config().sparse_infill_density.value > 0) {
         // scaling an area requires two calls!
-        double min_area = scale_(scale_(this->region().config().solid_infill_below_area.value));
+        double min_area = scale_(scale_(this->region().config().minimum_sparse_infill_area.value));
         for (Surface &surface : this->fill_surfaces.surfaces)
             if (surface.surface_type == stInternal && surface.area() <= min_area)
                 surface.surface_type = stInternalSolid;
@@ -487,6 +495,87 @@ void LayerRegion::export_region_fill_surfaces_to_svg_debug(const char *name) con
     static std::map<std::string, size_t> idx_map;
     size_t &idx = idx_map[name];
     this->export_region_fill_surfaces_to_svg(debug_out_path("LayerRegion-fill_surfaces-%s-%d.svg", name, idx ++).c_str());
+}
+
+//BBS
+void LayerRegion::simplify_extrusion_entity()
+{
+    simplify_entity_collection(&perimeters);
+    simplify_entity_collection(&fills);
+}
+
+void LayerRegion::simplify_entity_collection(ExtrusionEntityCollection* entity_collection)
+{
+    for (size_t i = 0; i < entity_collection->entities.size(); i++) {
+        if (ExtrusionEntityCollection* collection = dynamic_cast<ExtrusionEntityCollection*>(entity_collection->entities[i]))
+            this->simplify_entity_collection(collection);
+        else if (ExtrusionPath* path = dynamic_cast<ExtrusionPath*>(entity_collection->entities[i]))
+            this->simplify_path(path);
+        else if (ExtrusionMultiPath* multipath = dynamic_cast<ExtrusionMultiPath*>(entity_collection->entities[i]))
+            this->simplify_multi_path(multipath);
+        else if (ExtrusionLoop* loop = dynamic_cast<ExtrusionLoop*>(entity_collection->entities[i]))
+            this->simplify_loop(loop);
+        else
+            throw Slic3r::InvalidArgument("Invalid extrusion entity supplied to simplify_entity_collection()");
+    }
+}
+
+void LayerRegion::simplify_path(ExtrusionPath* path)
+{
+    const auto print_config = this->layer()->object()->print()->config();
+    const bool spiral_mode = print_config.spiral_mode;
+    const bool enable_arc_fitting = print_config.enable_arc_fitting;
+    const auto scaled_resolution = scaled<double>(print_config.resolution.value);
+
+    if (enable_arc_fitting &&
+        !spiral_mode) {
+        if (path->role() == erInternalInfill)
+            path->simplify_by_fitting_arc(SCALED_SPARSE_INFILL_RESOLUTION);
+        else
+            path->simplify_by_fitting_arc(scaled_resolution);
+    } else {
+        path->simplify(scaled_resolution);
+    }
+}
+
+void LayerRegion::simplify_multi_path(ExtrusionMultiPath* multipath)
+{
+    const auto print_config = this->layer()->object()->print()->config();
+    const bool spiral_mode = print_config.spiral_mode;
+    const bool enable_arc_fitting = print_config.enable_arc_fitting;
+    const auto scaled_resolution = scaled<double>(print_config.resolution.value);
+
+    for (size_t i = 0; i < multipath->paths.size(); ++i) {
+        if (enable_arc_fitting &&
+            !spiral_mode) {
+            if (multipath->paths[i].role() == erInternalInfill)
+                multipath->paths[i].simplify_by_fitting_arc(SCALED_SPARSE_INFILL_RESOLUTION);
+            else
+                multipath->paths[i].simplify_by_fitting_arc(scaled_resolution);
+        } else {
+            multipath->paths[i].simplify(scaled_resolution);
+        }
+    }
+}
+
+void LayerRegion::simplify_loop(ExtrusionLoop* loop)
+{
+    const auto print_config = this->layer()->object()->print()->config();
+    const bool spiral_mode = print_config.spiral_mode;
+    const bool enable_arc_fitting = print_config.enable_arc_fitting;
+    const auto scaled_resolution = scaled<double>(print_config.resolution.value);
+
+    for (size_t i = 0; i < loop->paths.size(); ++i) {
+        if (enable_arc_fitting &&
+            !spiral_mode) {
+            if (loop->paths[i].role() == erInternalInfill)
+                loop->paths[i].simplify_by_fitting_arc(SCALED_SPARSE_INFILL_RESOLUTION);
+            else
+                loop->paths[i].simplify_by_fitting_arc(scaled_resolution);
+        } else {
+            loop->paths[i].simplify(scaled_resolution);
+        }
+    }
 }
 
 }
